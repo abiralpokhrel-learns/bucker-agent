@@ -17,7 +17,15 @@ from bucker.activities.demo import (
     record_task_started,
     run_step,
 )
+from bucker.activities.pipeline import (
+    evaluate_policy,
+    record_decision,
+    run_verifier,
+    run_worker,
+)
+from bucker.activities.planner import plan_task
 from bucker.config import settings
+from bucker.workflows.code_task_workflow import CodeTaskWorkflow
 from bucker.workflows.task_workflow import TaskWorkflow
 
 logging.basicConfig(
@@ -41,8 +49,13 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=settings.task_queue,
-        workflows=[TaskWorkflow],
-        activities=[record_task_started, run_step, record_task_completed],
+        workflows=[TaskWorkflow, CodeTaskWorkflow],
+        activities=[
+            # Phase 0 durability demo
+            record_task_started, run_step, record_task_completed,
+            # Phase 1 pipeline
+            plan_task, run_worker, run_verifier, evaluate_policy, record_decision,
+        ],
     )
     await worker.run()
 

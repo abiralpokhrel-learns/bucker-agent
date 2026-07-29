@@ -17,11 +17,18 @@ from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_PATH = Path(__file__).parent / "task.schema.json"
+RESULT_SCHEMA_PATH = Path(__file__).parent / "result.schema.json"
 
 
 @lru_cache(maxsize=1)
 def _validator() -> Draft202012Validator:
     schema = json.loads(SCHEMA_PATH.read_text())
+    return Draft202012Validator(schema)
+
+
+@lru_cache(maxsize=1)
+def _result_validator() -> Draft202012Validator:
+    schema = json.loads(RESULT_SCHEMA_PATH.read_text())
     return Draft202012Validator(schema)
 
 
@@ -79,3 +86,38 @@ def is_valid(data: dict[str, Any]) -> bool:
         return True
     except (ValidationFailure, Exception):
         return False
+
+
+# ---------------------------------------------------------- worker result ----
+class WorkerResult(BaseModel):
+    """What a worker produced. Shape-checked here, truth-checked by a verifier.
+
+    Validating this does not mean the work is correct — only that the worker
+    returned something structurally usable. Nothing here is trusted until the
+    task's registered verifier passes it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: int = 1
+    status: str
+    summary: str
+    diff: str | None = None
+    files_touched: list[str] = Field(default_factory=list)
+    commands_run: list[str] = Field(default_factory=list)
+    blocked_reason: str | None = None
+
+    @property
+    def produced_work(self) -> bool:
+        return self.status == "produced" and bool(self.diff)
+
+
+def validate_result(data: dict[str, Any]) -> WorkerResult:
+    """Validate a worker result against the published JSON Schema."""
+    errors = [
+        f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}"
+        for e in sorted(_result_validator().iter_errors(data), key=lambda e: list(e.path))
+    ]
+    if errors:
+        raise ValidationFailure(errors)
+    return WorkerResult(**data)

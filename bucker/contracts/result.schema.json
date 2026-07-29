@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bucker.dev/schemas/result/v1.json",
+  "title": "WorkerResult",
+  "description": "What a Worker produces. Schema-validated before it is allowed to become state, and still not trusted until a Verifier passes it — validation proves the shape is right, verification proves the work is right.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "summary"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["produced", "blocked", "no_change_needed"],
+      "description": "'produced' means the worker believes it did the work — a claim for the verifier to test, not a conclusion. 'blocked' means it could not proceed and is saying so instead of inventing a diff."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "What was done, in the worker's own words. Never used as evidence — only for humans reading the event log."
+    },
+    "diff": {
+      "type": ["string", "null"],
+      "description": "Unified diff to apply. Required when status is 'produced'."
+    },
+    "files_touched": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "commands_run": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "blocked_reason": {
+      "type": ["string", "null"],
+      "description": "Required when status is 'blocked'. A worker that cannot proceed must say why rather than produce plausible nonsense."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "produced" } }, "required": ["status"] },
+      "then": { "required": ["diff"], "properties": { "diff": { "type": "string", "minLength": 1 } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "blocked" } }, "required": ["status"] },
+      "then": { "required": ["blocked_reason"], "properties": { "blocked_reason": { "type": "string", "minLength": 1 } } }
+    }
+  ]
+}
