@@ -134,6 +134,41 @@ minutes.
 **Changes my mind:** Nothing. This is a straightforward tuning bug, and the
 crash test earned its keep by catching it on day one.
 
+**Postscript:** the timeout was real but it was not the whole story — see the
+next entry. Shortening it alone did not make M1 pass.
+
+---
+
+## 2026-07-29 — Crash injection must be one-shot
+
+**Decision:** `should_inject_crash()` writes a `<step>.crashed` marker to disk
+and returns True at most once per (workspace, step). Extracted from `run_step`
+so it is unit-testable; covered by `tests/test_crash_injection.py`.
+
+**Why:** The second M1 run still failed, with the event stream frozen at 7
+events for the full 180 seconds — `TaskCreated`, `TaskStarted`, then
+`fetch` started/completed, `analyze` started/completed, `transform` started,
+and nothing further. A stalled-but-healthy system would have produced *some*
+progress after the restart. Zero progress meant no worker was alive.
+
+The cause: `crash_at` is part of the workflow input, and Temporal replays a
+retried activity with the identical input. So the restarted worker reached
+`transform`, matched `crash_at` again, and killed itself — as would every
+worker after it. The injection was designed as "crash at this step" when it
+needed to be "crash at this step, once."
+
+**Wider lesson:** anything a retried activity reads from its input is, by
+definition, replayed. State that must not repeat has to live somewhere that
+survives process death — on disk, or in the event log. This will matter again
+in Phase 1 for any worker action that must not be re-attempted.
+
+**Test-design lesson:** the crash test now watches the restarted worker's
+liveness during the wait instead of only blocking on the result. A dead
+replacement worker is a specific diagnosis; "timed out" is not. Diagnostics
+that distinguish failure modes are worth writing before you need them.
+
+**Changes my mind:** Nothing.
+
 ---
 
 ## 2026-07-29 — Repository layout and vendored binaries
@@ -149,6 +184,90 @@ outer repository also tracked the project as a bare gitlink, so the pushed
 repository contained no actual source.
 
 **Changes my mind:** Nothing.
+
+---
+
+## 2026-07-29 — M1 passed; recorded resume time is 16s, not the 5s target
+
+**Observed:** M1 green. Crash at `transform` at +0.49s, next step completed at
++16.61s, all five steps present, exactly one crash marker, no duplicates.
+
+**The honest number:** the source docs target "resume in under 5 seconds"; the
+measured wall-clock gap is ~16s. State reconstruction itself was effectively
+instant — the 16 seconds is almost entirely Temporal *detecting* the dead
+worker, which it cannot do before `start_to_close_timeout` (15s) expires.
+
+**Decision:** record 16s rather than quietly retuning the timeout to hit the
+target. Chasing the number by shrinking the timeout would make long activities
+flap. The real fix is heartbeating (Phase 2, step 32-ish), which detects worker
+death in seconds independent of how long the work legitimately takes.
+
+**Bonus observation:** the blob store deduplicated across runs — `fetch` and
+`analyze` outputs from the failed run were byte-identical to the successful
+run's, so no new blobs were written. Content addressing working as designed,
+unprompted.
+
+---
+
+## 2026-07-29 — Prompts use string.Template, not str.format
+
+**Decision:** Prompt templates use `$name` placeholders rendered with
+`string.Template.safe_substitute`.
+
+**Why:** The planner prompt is mostly a JSON schema. `str.format` treats every
+`{` in that schema as a placeholder and raises `KeyError` on the first brace.
+The planner test suite caught this on its very first run, before any model was
+ever called — which is the argument for writing the fake-router tests before
+wiring up a live provider.
+
+`safe_substitute` over `substitute` so an unrecognised `$token` in a prompt is
+passed through rather than killing a live task at runtime.
+
+**Changes my mind:** Nothing.
+
+---
+
+## 2026-07-29 — Recorded mode never falls back to live
+
+**Decision:** A missing recording raises `RecordingMissing`. It never silently
+issues a live call.
+
+**Why:** The fallback is superficially friendlier and quietly catastrophic: a
+test suite advertised as free and deterministic would start costing money and
+varying between runs, and nobody would notice until the bill or a flaky
+benchmark arrived. Editing a prompt changes the request digest and therefore
+requires a fresh recording — that is the intended behaviour, not a bug.
+
+The router also verifies that a recorded response still hashes to its blob ref
+before replaying it, so a corrupted or tampered archive surfaces as an error
+instead of being replayed as truth.
+
+**Changes my mind:** Nothing.
+
+---
+
+## 2026-07-29 — Always invoke tools as `python -m <tool>`
+
+**Decision:** Docs, scripts, and habit use `uv run python -m pytest` /
+`python -m ruff`, never the generated `pytest.exe` / `ruff.exe` shims.
+
+**Why:** Two separate failures on Windows in one sitting, both from those shims.
+
+First, moving the repo out of OneDrive broke every launcher: `uv` writes them as
+trampolines with the venv's absolute path baked in, so they cannot canonicalize
+their own script path once the folder moves. Rebuilding `.venv` fixed that one.
+
+Then the freshly-built launchers were blocked outright by Windows Smart App
+Control — `os error 4551` — because they are unsigned executables that appeared
+from nowhere. Rebuilding cannot fix that; the policy objects to the shim
+existing at all.
+
+`python -m` routes through the signed interpreter, so neither failure applies,
+and it behaves identically on Linux and macOS. No security setting was changed
+to work around this: Smart App Control is a real boundary, and on Windows 11
+disabling it is one-way (a reinstall to restore).
+
+**Changes my mind:** Nothing. This is strictly more portable than the shims.
 
 ---
 

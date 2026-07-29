@@ -8,7 +8,7 @@ Tests split into two families:
 
 Run the db family:
     docker compose up -d
-    BUCKER_TEST_DATABASE_URL=postgresql://postgres:dev@localhost:5432/bucker uv run pytest
+    BUCKER_TEST_DATABASE_URL=postgresql://postgres:dev@localhost:5432/bucker uv run python -m pytest
 """
 
 from __future__ import annotations

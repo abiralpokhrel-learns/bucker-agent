@@ -24,4 +24,5 @@ Setup complete. Two terminals from here:
 Then:
       uv run python -m bucker.cli start --objective "my first task" --wait
       uv run python -m tests.crash_test   # the M1 durability proof
+      uv run python -m pytest -q          # test suite (python -m, never pytest.exe)
 MSG

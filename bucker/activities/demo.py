@@ -84,6 +84,35 @@ async def record_task_started(task_id: str, objective: str, task_type: str) -> i
     return event.id
 
 
+def should_inject_crash(
+    workspace: Path, step: str, crash_at: str | None
+) -> bool:
+    """Decide whether to hard-kill the process at this step. One-shot.
+
+    Extracted from ``run_step`` so it can be unit-tested — the caller does the
+    actual ``os._exit``, which is untestable in-process.
+
+    Why the on-disk marker: ``crash_at`` travels inside the workflow input, and
+    Temporal hands a retried activity the *identical* input. A naive
+    ``if crash_at == step: exit()`` therefore kills every replacement worker
+    too, forever, and the task never progresses — the crash test just sits
+    there until it times out. The marker file outlives the process (an
+    in-memory flag cannot, since the process is what dies), so the retry sees
+    "already crashed here once" and continues normally.
+
+    Returns True at most once per (workspace, step).
+    """
+    if not crash_at or crash_at != step:
+        return False
+
+    crash_marker = workspace / f"{step}.crashed"
+    if crash_marker.exists():
+        return False
+
+    crash_marker.write_text("crash injected once\n")
+    return True
+
+
 @activity.defn
 async def run_step(inp: StepInput) -> int:
     """Perform one fake unit of work, durably.
@@ -112,9 +141,7 @@ async def run_step(inp: StepInput) -> int:
         marker.write_text(f"{inp.step} completed\n")
 
     # --- crash injection for the Phase 0 proof (step 12) ------------------
-    # Kills the process *between* the side effect and the event append: the
-    # nastiest window, and the one the architecture claims to survive.
-    if inp.crash_at and inp.crash_at == inp.step:
+    if should_inject_crash(workspace, inp.step, inp.crash_at):
         activity.logger.warning("CRASH INJECTION at step %s", inp.step)
         os._exit(137)
 

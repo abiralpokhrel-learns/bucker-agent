@@ -111,25 +111,60 @@ async def main() -> int:
     print("    (the crashed activity must first hit start_to_close_timeout "
           "before Temporal reschedules it — expect a short pause)")
     worker2 = start_worker()
+    result = None
     try:
-        result = await asyncio.wait_for(handle.result(), timeout=RESUME_TIMEOUT)
-        print(f"    workflow completed: {result['status']}")
-    except TimeoutError:
-        print(f"!! workflow did not complete within {RESUME_TIMEOUT}s of restart")
-        print("   Most likely cause: the activity's start_to_close_timeout in")
-        print("   bucker/workflows/task_workflow.py is longer than this wait.")
-        print("   Temporal cannot detect a dead worker until that timeout")
-        print("   expires, so recovery cannot begin sooner. Either shorten it")
-        print("   or raise RESUME_TIMEOUT here.")
-        events_now = await store.read_stream(task_id)
-        print(f"   events so far: {[e.event_type for e in events_now]}")
-        return 1
+        # Watch the restarted worker's liveness while waiting, instead of just
+        # blocking on the result. If the replacement worker also dies, that is
+        # a specific, diagnosable bug (crash injection firing more than once) —
+        # and saying so beats burning the full timeout and blaming it on tuning.
+        result_task = asyncio.ensure_future(handle.result())
+        deadline = time.time() + RESUME_TIMEOUT
+        last_report = 0.0
+
+        while time.time() < deadline:
+            if result_task.done():
+                result = result_task.result()
+                print(f"    workflow completed: {result['status']}")
+                break
+
+            if worker2.poll() is not None:
+                result_task.cancel()
+                print(f"\n!! the RESTARTED worker also died (code {worker2.returncode})")
+                print("   Crash injection fired more than once. `crash_at` travels")
+                print("   in the workflow input, so every retried activity receives")
+                print("   it again — the injection must be made one-shot (see the")
+                print("   .crashed marker in bucker/activities/demo.py).")
+                events_now = await store.read_stream(task_id)
+                print(f"   events: {[e.event_type for e in events_now]}")
+                return 1
+
+            elapsed = time.time() - (deadline - RESUME_TIMEOUT)
+            if elapsed - last_report >= 10:
+                last_report = elapsed
+                n = await store.count(task_id)
+                print(f"    ...{elapsed:>3.0f}s elapsed, {n} events, worker alive")
+
+            await asyncio.sleep(1)
+        else:
+            result_task.cancel()
+            print(f"\n!! workflow did not complete within {RESUME_TIMEOUT}s of restart")
+            print("   The worker stayed alive but no progress was made. Check that")
+            print("   the activity start_to_close_timeout in task_workflow.py is")
+            print("   shorter than RESUME_TIMEOUT — Temporal cannot reschedule a")
+            print("   dead worker's activity until that timeout expires.")
+            events_now = await store.read_stream(task_id)
+            print(f"   events: {[e.event_type for e in events_now]}")
+            return 1
     finally:
         worker2.terminate()
         try:
             worker2.wait(timeout=10)
         except subprocess.TimeoutExpired:
             worker2.kill()
+
+    if result is None:
+        print("!! workflow produced no result")
+        return 1
 
     # --- assertions -------------------------------------------------------
     print("\n[3] verifying")

@@ -50,11 +50,18 @@ Starts a task, hard-kills the worker (`os._exit`) between a side effect and its 
 ## Testing
 
 ```bash
-uv run pytest                                  # pure tests, no infra needed
-BUCKER_TEST_DATABASE_URL=postgresql://postgres:dev@localhost:5432/bucker uv run pytest
+uv run python -m pytest                        # pure tests, no infra needed
+BUCKER_TEST_DATABASE_URL=postgresql://postgres:dev@localhost:5432/bucker uv run python -m pytest
 ```
 
 Database tests skip automatically when that variable is unset, so a fresh clone tests green with nothing running.
+
+**Always invoke tools as `python -m <tool>`, not via the generated `.exe` shims.**
+`uv` writes small unsigned launchers (`pytest.exe`, `ruff.exe`) into `.venv/Scripts/`.
+Windows Smart App Control blocks them outright (`os error 4551`), and they also
+break if the project folder is ever moved, since each one hardcodes an absolute
+path. Going through `python -m` sidesteps both and behaves identically on
+Linux and macOS.
 
 ## Project layout
 

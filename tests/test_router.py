@@ -1,0 +1,172 @@
+"""Model router tests (steps 14-15).
+
+No network anywhere in this file. Recorded mode is exercised directly and live
+mode is never invoked, which is the point: if these tests could reach a
+provider, they would cost money and vary between runs.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from bucker.core.blob import BlobStore
+from bucker.router.client import (
+    ModelRouter,
+    RecordingMissing,
+    RecordingStore,
+    request_digest,
+)
+
+
+@pytest.fixture
+def router(tmp_path):
+    return ModelRouter(
+        BlobStore(tmp_path / "blobs"),
+        model="test-model-a",
+        mode="recorded",
+        recordings=RecordingStore(tmp_path / "recordings"),
+    )
+
+
+def record(router: ModelRouter, messages, text, *, temperature=0.0, cost=0.01):
+    """Seed a recording the way a live run would have."""
+    digest = request_digest(router.model, messages, temperature)
+    raw_ref = router.blobs.put_json({"choices": [{"message": {"content": text}}]})
+    router.recordings.put(digest, {
+        "model": router.model,
+        "purpose": "test",
+        "text": text,
+        "raw_ref": raw_ref,
+        "request_ref": "sha256:unused",
+        "cost_usd": cost,
+        "latency_ms": 42,
+        "usage": {"total_tokens": 100},
+    })
+    return digest
+
+
+# ------------------------------------------------------------- digesting ----
+def test_digest_is_stable_across_key_order():
+    a = request_digest("m", [{"role": "user", "content": "hi"}], 0.0)
+    b = request_digest("m", [{"content": "hi", "role": "user"}], 0.0)
+    assert a == b, "dict ordering must not change the recording key"
+
+
+def test_digest_changes_with_model():
+    msgs = [{"role": "user", "content": "hi"}]
+    assert request_digest("model-a", msgs, 0.0) != request_digest("model-b", msgs, 0.0)
+
+
+def test_digest_changes_with_prompt():
+    a = request_digest("m", [{"role": "user", "content": "hi"}], 0.0)
+    b = request_digest("m", [{"role": "user", "content": "hello"}], 0.0)
+    assert a != b
+
+
+def test_digest_changes_with_temperature():
+    msgs = [{"role": "user", "content": "hi"}]
+    assert request_digest("m", msgs, 0.0) != request_digest("m", msgs, 0.7)
+
+
+# -------------------------------------------------------------- recorded ----
+async def test_recorded_call_returns_stored_text(router):
+    msgs = [{"role": "user", "content": "plan something"}]
+    record(router, msgs, '{"ok": true}')
+
+    resp = await router.complete(msgs, purpose="planner")
+    assert resp.text == '{"ok": true}'
+    assert resp.from_recording is True
+    assert resp.model == "test-model-a"
+
+
+async def test_recorded_calls_are_deterministic(router):
+    msgs = [{"role": "user", "content": "same input"}]
+    record(router, msgs, "same output")
+
+    first = await router.complete(msgs, purpose="planner")
+    second = await router.complete(msgs, purpose="planner")
+    assert first.text == second.text
+    assert first.raw_ref == second.raw_ref
+
+
+async def test_replay_is_free(router):
+    """Recorded calls must not accrue cost, or budget accounting lies."""
+    msgs = [{"role": "user", "content": "x"}]
+    record(router, msgs, "y", cost=5.0)
+
+    resp = await router.complete(msgs, purpose="planner")
+    assert resp.cost_usd == 0.0
+
+
+async def test_missing_recording_raises_loudly(router):
+    """Must never silently fall back to a live call."""
+    with pytest.raises(RecordingMissing, match="No recording"):
+        await router.complete(
+            [{"role": "user", "content": "never recorded"}], purpose="planner"
+        )
+
+
+async def test_changed_prompt_invalidates_recording(router):
+    """Editing a prompt must require a fresh recording, not reuse a stale one."""
+    original = [{"role": "user", "content": "version one"}]
+    record(router, original, "answer")
+
+    assert (await router.complete(original, purpose="planner")).text == "answer"
+
+    with pytest.raises(RecordingMissing):
+        await router.complete(
+            [{"role": "user", "content": "version two"}], purpose="planner"
+        )
+
+
+async def test_tampered_blob_is_detected(router):
+    """A corrupted archive must fail, not be replayed as truth."""
+    msgs = [{"role": "user", "content": "verify me"}]
+    digest = record(router, msgs, "original")
+
+    raw_ref = router.recordings.get(digest)["raw_ref"]
+    path = router.blobs._path_for(BlobStore._strip(raw_ref))
+    path.write_bytes(b'{"choices":[{"message":{"content":"TAMPERED"}}]}')
+
+    with pytest.raises(RecordingMissing, match="corrupted"):
+        await router.complete(msgs, purpose="planner")
+
+
+async def test_request_is_archived_verbatim(router):
+    msgs = [{"role": "user", "content": "archive this"}]
+    record(router, msgs, "ok")
+
+    resp = await router.complete(msgs, purpose="planner")
+    archived = router.blobs.get_json(resp.request_ref)
+    assert archived["messages"] == msgs
+    assert archived["model"] == "test-model-a"
+    assert archived["purpose"] == "planner"
+
+
+# ---------------------------------------------------------------- config ----
+def test_mode_must_be_valid(tmp_path):
+    with pytest.raises(ValueError, match="live.*recorded"):
+        ModelRouter(BlobStore(tmp_path / "b"), model="m", mode="yolo")
+
+
+def test_no_hardcoded_model_names_in_source():
+    """The 'LLM is a replaceable plugin' claim, enforced in the codebase.
+
+    CI runs the same check; duplicating it here means you find out at test time
+    rather than after a push.
+    """
+    import re
+    from pathlib import Path
+
+    pattern = re.compile(r'"(gpt-[\w.\-]+|claude-[\w.\-]+|o[1-9]-[a-z]+)"')
+    root = Path(__file__).resolve().parent.parent / "bucker"
+
+    offenders = []
+    for path in root.rglob("*.py"):
+        if path.name == "config.py":
+            continue
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if pattern.search(line):
+                offenders.append(f"{path.relative_to(root)}:{i}")
+
+    assert not offenders, f"hardcoded model names outside config.py: {offenders}"
