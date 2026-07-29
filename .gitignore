@@ -9,6 +9,16 @@ workspace/
 evaluation_results/
 *.log
 
+# Recorded model responses. Deliberately NOT committed by default: they are
+# derived data keyed by request hash, they grow without bound during iteration,
+# and they only make sense paired with the blobs in blobstore/ (also ignored) —
+# committing one without the other leaves dangling refs.
+#
+# Benchmark recordings that back a *published* result are a different thing:
+# those get exported deliberately to a versioned artifact, not swept in by
+# accident. See BUILD_PLAN step 30.
+recordings/
+
 # --- vendored binaries -----------------------------------------------------
 # temporal.exe is ~141 MB. GitHub hard-rejects files over 100 MB, and even a
 # compressed blob bloats every future clone forever. Install the Temporal CLI
