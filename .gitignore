@@ -1,0 +1,38 @@
+# --- secrets ---------------------------------------------------------------
+.env
+*.pem
+*.key
+
+# --- runtime state ---------------------------------------------------------
+blobstore/
+workspace/
+evaluation_results/
+*.log
+
+# --- vendored binaries -----------------------------------------------------
+# temporal.exe is ~141 MB. GitHub hard-rejects files over 100 MB, and even a
+# compressed blob bloats every future clone forever. Install the Temporal CLI
+# on PATH (scoop install temporal) instead of keeping it in the repo.
+temporal.exe
+temporal
+*.exe
+*.dll
+
+# --- python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- editors / os ----------------------------------------------------------
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

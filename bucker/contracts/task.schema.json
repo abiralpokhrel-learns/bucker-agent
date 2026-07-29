@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bucker.dev/schemas/task/v1.json",
+  "title": "Task",
+  "description": "The typed contract a Planner must produce. Fuzzy goals go in; a strictly validated object comes out. Every downstream component knows exactly what it is receiving, which is what stops drift.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_type", "objective", "verifier"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Bump only with a migration plan for stored streams."
+    },
+    "task_type": {
+      "type": "string",
+      "enum": ["code_change", "research", "demo"],
+      "description": "Selects the worker and the default verifier family."
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 2000,
+      "description": "What done looks like, in one sentence."
+    },
+    "files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Files the worker may touch. Empty means unrestricted within the sandbox workspace."
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "properties": {
+        "tests_required": { "type": "boolean", "default": true },
+        "coverage": { "type": "number", "minimum": 0, "maximum": 100 },
+        "max_diff_lines": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "budget_usd": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 100,
+      "description": "Hard ceiling. The scheduler halts the task on breach; it is not advisory."
+    },
+    "deadline_minutes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1440
+    },
+    "verifier": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Registered verifier name, e.g. python_test_runner. There is no universal 'is this good?' function — each domain plugs in its own objective check."
+    },
+    "parent_id": {
+      "type": ["string", "null"],
+      "format": "uuid"
+    }
+  }
+}
