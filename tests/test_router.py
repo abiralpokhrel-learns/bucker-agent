@@ -28,9 +28,17 @@ def router(tmp_path):
     )
 
 
-def record(router: ModelRouter, messages, text, *, temperature=0.0, cost=0.01):
-    """Seed a recording the way a live run would have."""
-    digest = request_digest(router.model, messages, temperature)
+def record(router: ModelRouter, messages, text, *, temperature=0.0, cost=0.01,
+           purpose="planner"):
+    """Seed a recording the way a live run would have.
+
+    ``max_tokens`` must match what ``complete()`` will send, since it is part of
+    the request identity — a recording made at one ceiling is not a valid replay
+    for a call at another.
+    """
+    digest = request_digest(
+        router.model, messages, temperature, router.max_tokens_for(purpose)
+    )
     raw_ref = router.blobs.put_json({"choices": [{"message": {"content": text}}]})
     router.recordings.put(digest, {
         "model": router.model,
@@ -66,6 +74,44 @@ def test_digest_changes_with_prompt():
 def test_digest_changes_with_temperature():
     msgs = [{"role": "user", "content": "hi"}]
     assert request_digest("m", msgs, 0.0) != request_digest("m", msgs, 0.7)
+
+
+def test_digest_changes_with_max_tokens():
+    """A ceiling can truncate the response, so it is part of the request's
+    identity. Replaying an 8000-token recording for a 500-token call would be
+    a lie about what happened."""
+    msgs = [{"role": "user", "content": "hi"}]
+    assert request_digest("m", msgs, 0.0, 500) != request_digest("m", msgs, 0.0, 8000)
+
+
+# ----------------------------------------------------------- max_tokens ----
+def test_max_tokens_is_always_set(router):
+    """Never left to the provider.
+
+    Omitting it lets the provider assume the model maximum (64k on current
+    frontier models). Providers that reserve credit up front then refuse the
+    request outright on a small balance — which is exactly how this was found.
+    It is also a cost ceiling, and unbounded generation is unbounded spend.
+    """
+    for purpose in ("planner", "worker", "anything_else"):
+        assert router.max_tokens_for(purpose) > 0
+
+
+def test_max_tokens_is_sized_per_component(router):
+    """A planner emits a small contract; a worker emits a diff."""
+    assert router.max_tokens_for("planner") < router.max_tokens_for("worker")
+
+
+def test_max_tokens_reaches_the_archived_request(router):
+    """It must appear in the stored request, or replay cannot reproduce it."""
+    import asyncio
+
+    msgs = [{"role": "user", "content": "check the archive"}]
+    record(router, msgs, "ok")
+
+    resp = asyncio.run(router.complete(msgs, purpose="planner"))
+    archived = router.blobs.get_json(resp.request_ref)
+    assert archived["max_tokens"] == router.max_tokens_for("planner")
 
 
 # -------------------------------------------------------------- recorded ----

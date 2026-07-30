@@ -1,0 +1,41 @@
+# The sandbox image for untrusted, model-authored work.
+#
+# Why this exists: containers run with `--network none`, so nothing can be
+# installed at task time. Every tool a verifier needs must already be in the
+# image. That constraint is deliberate — a sandbox that pip-installs at runtime
+# is a sandbox with a network, and the isolation claim collapses.
+#
+# Build (the smoke run does this for you if the image is missing):
+#     docker build -f Dockerfile.sandbox -t bucker-sandbox:latest .
+#
+# Phase 3 note: pin by digest rather than tag before publishing benchmark
+# numbers, so a silent base-image update cannot move your results.
+
+FROM python:3.12-slim
+
+# Verifier tooling. Kept minimal — every addition is more surface inside the
+# boundary, and anything not needed to *check* work does not belong here.
+RUN pip install --no-cache-dir \
+        pytest==8.3.4 \
+        ruff==0.8.4 \
+    && rm -rf /root/.cache
+
+# git is needed for `git apply` when the worker returns a unified diff.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Matches the --user 1000:1000 the sandbox runs with, so the workspace mount is
+# writable without granting root inside the container.
+RUN useradd --uid 1000 --create-home --shell /bin/bash bucker
+
+WORKDIR /workspace
+USER 1000:1000
+
+# git refuses to operate in a directory owned by another user; the workspace is
+# bind-mounted from the host so ownership will not match.
+RUN git config --global --add safe.directory /workspace \
+    && git config --global user.email "sandbox@bucker.local" \
+    && git config --global user.name "bucker sandbox"
+
+CMD ["sleep", "infinity"]

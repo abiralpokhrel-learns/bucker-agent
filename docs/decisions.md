@@ -445,4 +445,121 @@ the exemption is visible in the repo rather than buried in a settings page.
 
 ---
 
+## 2026-07-29 — The sandbox needs its own image
+
+**Decision:** `Dockerfile.sandbox` (python:3.12-slim + pytest + ruff + git),
+built as `bucker-sandbox:latest`. The image name is config
+(`BUCKER_SANDBOX_IMAGE`), not a literal.
+
+**Why:** Discovered while building the smoke run, and it is a genuine
+consequence of the isolation design rather than an oversight. Containers run
+with `--network none`, so nothing can be installed at task time — every tool a
+verifier needs must already be baked in. `python:3.12-slim` has no pytest, so
+the verifier could never have run.
+
+The tempting fix — allow network for a `pip install` step — would have quietly
+destroyed the containment property that the sandbox tests assert. A sandbox
+that pip-installs at runtime is a sandbox with a network. Baking the tools in
+keeps `--network none` true and makes the tool set explicit and reviewable.
+
+This also matches how the SWE-bench harness works (prebuilt images per
+instance), so it is the right shape for step 26 rather than a detour.
+
+**Changes my mind:** Nothing. Pin by digest instead of tag before publishing
+benchmark numbers, so a silent base-image update cannot move results.
+
+---
+
+## 2026-07-29 — Smoke run before the replay engine
+
+**Decision:** Build an end-to-end smoke run (`scripts/smoke_run.py`) before
+step 23, and run the components directly rather than through Temporal.
+
+**Why:** Every component was tested against fakes. Nothing had ever run against
+a real model, a real container, or real pytest output — so "216 tests pass" said
+nothing about whether the pieces *compose*. The sandbox image problem above was
+found within minutes of writing this script and would have survived any amount
+of additional unit testing.
+
+Bypassing Temporal is deliberate: durability is already proven by M1, and what
+was unproven is the AI pipeline. Keeping the orchestrator out means a failure
+here has one possible cause instead of two.
+
+The task is deliberately trivial — a missing `subtract` function — so a failure
+indicates broken plumbing rather than a hard problem. Difficulty belongs in the
+benchmark, where it is the point.
+
+Secondary benefit, and the reason to do it before step 23: the live run creates
+the first real recordings, so the replay engine can be tested against genuine
+model output instead of hand-written fixtures.
+
+**Changes my mind:** Nothing.
+
+---
+
+## 2026-07-29 — max_tokens is always set, and is part of the request identity
+
+**Decision:** Every model call sends an explicit `max_tokens`, sized per
+component (planner 2000, worker 8000, default 4000, all env-overridable). It is
+included in the request digest.
+
+**Why:** The first live run failed with a 402 from OpenRouter: *"You requested
+up to 64000 tokens, but can only afford 2666."* We were passing `max_tokens=None`,
+so the provider assumed the model's maximum. Providers reserve credit against
+that ceiling before generating, so a request whose real answer is a few hundred
+tokens was rejected for want of credit for 64,000.
+
+The billing failure is the symptom. The actual defect is that this project's
+entire thesis is hard ceilings — budget, deadline, retries all enforced — and
+the most direct ceiling of all, output length, was left unbounded. An unbounded
+generation is an unbounded bill. Sizing it per component costs nothing and is
+correct independent of any provider's billing model.
+
+`max_tokens` joins the digest because it can truncate a response: the same
+prompt at 500 and at 8000 tokens are genuinely different calls, and replaying
+one as the other would misrepresent what happened.
+
+**Changes my mind:** Nothing. If a component legitimately needs more, raise its
+own ceiling explicitly rather than removing the concept.
+
+---
+
+## 2026-07-29 — Provider errors get translated, not re-raised raw
+
+**Decision:** `explain_provider_error()` maps 402 / 401 / 404 / rate-limit
+responses to a short cause-and-fix, and the smoke run prints that instead of the
+provider traceback.
+
+**Why:** The 402 above arrived as roughly eighty lines of nested tracebacks
+across three libraries, with the one useful sentence buried in the middle of a
+JSON blob. The four realistic causes — no credit, bad key, wrong model name,
+rate limit — each have a different fix, and the raw output makes them look
+identical. Diagnosis quality is a feature, and every hour lost to an opaque
+error is an hour not spent on the benchmark.
+
+Same principle as the `.env` diagnostic added earlier the same day: when a
+failure is predictable, say which one it is.
+
+**Changes my mind:** Nothing.
+
+---
+
+## 2026-07-29 — The first real smoke run may use a local model
+
+**Decision:** Treat an Ollama-backed model (`ollama/<model>`) as a valid live
+provider for the smoke run. The preflight verifies that its local model is
+installed and does not require a cloud API key.
+
+**Why:** The evidence required here is a real model response flowing through
+the router, archive, worker, sandbox, verifier, and recording store. It does
+not require a billable cloud request. A local model supplies the same boundary
+and lets a contributor produce their first real recordings without buying API
+credit. Replays remain identical regardless of which provider created them.
+
+**Changes my mind:** Use a hosted provider as the default smoke target if the
+benchmark requires a particular hosted model or if local-model output proves
+too unreliable for this deliberately tiny task.
+
+---
+
 ## <!-- next entry: date, decision, why, what changes my mind -->

@@ -239,6 +239,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "jsonschema" },
     { name = "pydantic" },
+    { name = "python-dotenv" },
     { name = "temporalio" },
     { name = "uvicorn" },
 ]
@@ -262,6 +263,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "python-dotenv", specifier = ">=1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
     { name = "temporalio", specifier = ">=1.7" },
     { name = "uvicorn", specifier = ">=0.30" },

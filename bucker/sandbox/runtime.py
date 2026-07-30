@@ -31,10 +31,14 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from bucker.config import settings
 from bucker.security.secrets import Finding, redact
 
-#: Small, predictable, and already has Python. Pin by digest before Phase 3.
-DEFAULT_IMAGE = "python:3.12-slim"
+#: Built from Dockerfile.sandbox — python:3.12-slim plus pytest, ruff, and git.
+#: It has to carry every tool a verifier needs, because containers run with no
+#: network and nothing can be installed at task time. Pin by digest before
+#: publishing any benchmark numbers (Phase 3).
+DEFAULT_IMAGE = settings.sandbox_image
 
 #: Ceilings, not targets. A task needing more should say so in its contract.
 DEFAULT_MEMORY = "512m"

@@ -15,6 +15,7 @@ dependencies = [
     "jsonschema>=4.22",
     "fastapi>=0.111",
     "uvicorn>=0.30",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

@@ -39,6 +39,63 @@ uv run python -m bucker.cli events <task_id>   # the full audit trail
 uv run python -m bucker.cli show   <task_id>   # state, rebuilt from events
 ```
 
+### Run the pipeline end to end
+
+```bash
+docker build -f Dockerfile.sandbox -t bucker-sandbox:latest .   # one time
+
+uv run python -m scripts.smoke_run --live    # real model; recommended free OpenRouter route
+uv run python -m scripts.smoke_run           # replay from recordings, free
+```
+
+A tiny calculator project with a failing test goes in; a fuzzy objective becomes
+a typed contract, a model writes real code inside a network-isolated container,
+and the project's own tests — not the model — decide whether it worked.
+
+The sandbox image has to carry every tool a verifier needs. Containers run with
+`--network none`, so nothing can be installed at task time; a sandbox that
+pip-installs at runtime is a sandbox with a network.
+
+### First real run: free OpenRouter model
+
+Docker is required for the sandbox whichever model you select. The fastest
+no-cost real run uses OpenRouter's free tier: create a key, then set:
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-...
+BUCKER_MODEL=openrouter/nvidia/nemotron-3-super-120b-a12b:free
+BUCKER_MAX_TOKENS_PLANNER=1000
+BUCKER_MAX_TOKENS_WORKER=3000
+
+uv run --extra llm python -m scripts.smoke_run --live
+```
+
+Free-model availability and rate limits can change; choose a current `:free`
+model from [OpenRouter's model list](https://openrouter.ai/models) if needed.
+After the run succeeds, omit `--live` to prove the replay path for free.
+
+### Offline option: Ollama
+
+Use [Ollama](https://ollama.com) to run the model locally. This still makes a
+real model request and writes real recordings; the only difference is that the
+model runs on your computer rather than a billed provider.
+
+```bash
+ollama pull <coding-model>
+# Set these values in .env
+BUCKER_MODEL=ollama/<coding-model>
+BUCKER_MAX_TOKENS_PLANNER=1000
+BUCKER_MAX_TOKENS_WORKER=3000
+
+uv run --extra llm python -m scripts.smoke_run --live
+```
+
+The 7B model is a reasonable starting point if you have roughly 8 GB of free
+memory; choose a smaller Ollama coding model on lower-memory hardware. The
+smoke-run preflight checks that Ollama and the chosen model are ready before it
+creates a task. Once it succeeds, run the command without `--live` to prove
+the recorded replay path for free.
+
 ### Prove the durability claim yourself
 
 ```bash

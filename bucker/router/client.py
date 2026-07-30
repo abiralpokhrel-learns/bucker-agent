@@ -60,14 +60,28 @@ class ModelResponse:
     usage: dict[str, Any] = field(default_factory=dict)
 
 
-def request_digest(model: str, messages: list[dict], temperature: float) -> str:
+def request_digest(
+    model: str,
+    messages: list[dict],
+    temperature: float,
+    max_tokens: int | None = None,
+) -> str:
     """Stable fingerprint of a request. Same inputs -> same recording.
 
     Sorted keys and a fixed separator so dict ordering cannot change the hash;
     otherwise the same logical call could miss its own recording.
+
+    ``max_tokens`` is part of the identity because it can truncate the response:
+    the same prompt at 500 tokens and at 8000 tokens are genuinely different
+    calls, and replaying one as the other would be a lie about what happened.
     """
     payload = json.dumps(
-        {"model": model, "messages": messages, "temperature": temperature},
+        {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -129,6 +143,13 @@ class ModelRouter:
                 f"BUCKER_MODEL_MODE must be 'live' or 'recorded', got {self.mode!r}"
             )
 
+    def max_tokens_for(self, purpose: str) -> int:
+        """Output ceiling for this component. Never None — see config.py."""
+        return {
+            "planner": settings.max_tokens_planner,
+            "worker": settings.max_tokens_worker,
+        }.get(purpose, settings.max_tokens_default)
+
     # ---------------------------------------------------------------------
     async def complete(
         self,
@@ -141,14 +162,19 @@ class ModelRouter:
         """Run one completion.
 
         ``purpose`` ("planner", "worker", ...) is recorded for telemetry so cost
-        can later be attributed per component, not just per task.
+        can later be attributed per component, not just per task, and it selects
+        the default output ceiling.
         """
-        digest = request_digest(self.model, messages, temperature)
+        if max_tokens is None:
+            max_tokens = self.max_tokens_for(purpose)
+
+        digest = request_digest(self.model, messages, temperature, max_tokens)
         request_ref = self.blobs.put_json(
             {
                 "model": self.model,
                 "messages": messages,
                 "temperature": temperature,
+                "max_tokens": max_tokens,
                 "purpose": purpose,
             }
         )
@@ -211,13 +237,13 @@ class ModelRouter:
                 "litellm is not installed. Run: uv sync --extra llm"
             ) from exc
 
+        # max_tokens is always set by complete(), never left to the provider.
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": max_tokens,
         }
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
 
         started = time.perf_counter()
         try:
