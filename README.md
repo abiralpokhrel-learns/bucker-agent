@@ -231,6 +231,59 @@ task completes with every step recorded exactly once, the side effect
 performed exactly once, and reconstructed state matching a full replay.
 Exit code 0 means **M1** is demonstrated.
 
+## Let other agents use bucker (MCP)
+
+Any agent that speaks the Model Context Protocol — Claude Desktop, Claude
+Code, Hermes, Cursor — can delegate work to bucker's verified pipeline:
+
+```bash
+uv sync --extra mcp
+uv run python -m bucker.mcp.server     # stdio MCP server
+```
+
+Tools exposed: `create_task` (runs planner → worker → verifier with
+budgets + audit trail), `get_task`, `list_tasks`, `replay_task` (free,
+deterministic re-run), `cancel_task`, `system_status`. Register it in your
+agent as a stdio MCP server; it talks to Postgres + Temporal directly, no
+HTTP server needed.
+
+## Recurring tasks (schedules)
+
+The same verified pipeline, on a cron — "verify the deploy every morning":
+
+```bash
+bucker schedules list
+bucker schedules create nightly-bench --template code-fix --cron "0 9 * * 1-5"
+bucker schedules pause nightly-bench
+bucker schedules delete nightly-bench
+```
+
+Each run mints a fresh task (new audit trail, new idempotency keys) and
+runs the full plan → work → verify loop as a child workflow. Schedules
+live in Temporal, so they survive restarts. Manage them from the
+dashboard at `/schedules-page`.
+
+## Task templates
+
+The new-task form (and schedules) start from named presets — code-fix,
+feature-add, research, data-extraction, demo — each with a sensible
+objective, budget and deadline. `bucker templates` lists them; one click
+on the form fills everything in.
+
+## CLI
+
+```bash
+bucker start --code --objective "..." --budget-usd 0.5 --wait
+bucker tasks                # recent tasks: status, cost, tokens
+bucker usage                # tokens/cost by model and stage
+bucker show <id>            # state rebuilt from events
+bucker events <id>          # the full audit trail
+bucker replay <id>          # deterministic re-run from recordings
+bucker templates            # task presets
+bucker schedules list       # recurring tasks
+bucker doctor               # diagnose a broken setup
+```
+
 ## Web UI + HTTP API
 
 The dashboard is server-rendered HTML — no frontend build step.
