@@ -39,6 +39,11 @@ dependencies = [
 [project.optional-dependencies]
 # Phase 1 onward. Kept out of the core install so Phase 0 stays lean.
 llm = ["litellm>=1.40"]
+# MCP server (bucker/mcp/server.py): expose verified tasks to other agents
+# over the Model Context Protocol. `uv sync --extra mcp` to install.
+# <2 pinned: mcp 2.x removed the FastMCP high-level API (split into a
+# separate package); 1.x is the stable, documented surface.
+mcp = ["mcp>=1.9,<2"]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
@@ -78,8 +83,10 @@ ignore = ["B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E501"]
-# Template module: long lines inside HTML/JS f-strings are inherent.
-"bucker/api/dashboard.py" = ["E501"]
+# Template module: long lines inside HTML/JS f-strings are inherent; the
+# new-task/schedules forms use %-formatting on purpose (JS braces break
+# f-strings), so UP031 is also ignored here.
+"bucker/api/dashboard.py" = ["E501", "UP031"]
 # Doctor's subprocess probe code is one long -c string by necessity.
 "scripts/doctor.py" = ["E501"]
 
