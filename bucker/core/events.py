@@ -39,6 +39,10 @@ class EventType(StrEnum):
     STEP_COMPLETED = "StepCompleted"
     TOOL_CALL_COMPLETED = "ToolCallCompleted"
     MODEL_CALL_COMPLETED = "ModelCallCompleted"
+    # Self-critique loop: the critic's verdict on a proposed diff
+    # (loop engineering, phase A). Payload: attempt, verdict, issues,
+    # repaired.
+    CRITIQUE_COMPLETED = "CritiqueCompleted"
     MODEL_CALL_FAILED = "ModelCallFailed"
     WORKER_COMPLETED = "WorkerCompleted"
 

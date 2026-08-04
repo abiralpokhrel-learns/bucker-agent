@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
 
+from bucker.config import settings
 from bucker.contracts.models import (
     Task,
     ValidationFailure,
@@ -60,10 +61,21 @@ class WorkAttempt:
     response: ModelResponse
     errors: list[str] = field(default_factory=list)
     result: WorkerResult | None = None
+    # Self-critique loop metadata (empty when critique is disabled or skipped).
+    critique_verdict: str | None = None        # "ok" | "needs_fix" | None
+    critique_issues: list[str] = field(default_factory=list)
+    repaired: bool = False                     # True when a repair round ran
+    extra_calls: list[ModelResponse] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         return self.result is not None
+
+    @property
+    def cost_usd(self) -> float:
+        return round(
+            self.response.cost_usd + sum(c.cost_usd for c in self.extra_calls), 6
+        )
 
 
 @dataclass(slots=True)
@@ -74,7 +86,7 @@ class WorkOutcome:
 
     @property
     def cost_usd(self) -> float:
-        return round(sum(a.response.cost_usd for a in self.attempts), 6)
+        return round(sum(a.cost_usd for a in self.attempts), 6)
 
 
 # ------------------------------------------------------------------ prompt --
@@ -168,6 +180,108 @@ def _validate(raw_text: str) -> tuple[WorkerResult | None, list[str]]:
         return None, [f"{type(exc).__name__}: {exc}"]
 
 
+# ------------------------------------------------- self-critique loop ----
+
+
+@dataclass(slots=True)
+class Critique:
+    """Parsed verdict of the critic pass (loop engineering, phase A)."""
+
+    verdict: str            # "ok" | "needs_fix"
+    issues: list[str]
+    fix_hint: str
+    response: ModelResponse
+
+    @property
+    def wants_repair(self) -> bool:
+        return self.verdict == "needs_fix" and bool(self.issues)
+
+
+def build_critic_prompt(task: Task, workspace_view: str, diff: str) -> str:
+    template = Template((PROMPTS / "critic_v1.md").read_text(encoding="utf-8"))
+    return template.safe_substitute(
+        contract=json.dumps(task.model_dump(), indent=2),
+        objective=task.objective,
+        diff=diff,
+        workspace=_truncate(workspace_view, 4000),
+    )
+
+
+def build_repair_prompt(
+    task: Task, critique: Critique, previous: str
+) -> str:
+    template = Template(
+        (PROMPTS / "worker_v1_repair.md").read_text(encoding="utf-8")
+    )
+    return template.safe_substitute(
+        critique="\n".join(f"- {i}" for i in critique.issues)
+        + (f"\n\nfix_hint: {critique.fix_hint}" if critique.fix_hint else ""),
+        objective=task.objective,
+        previous=_truncate(previous, 4000),
+    )
+
+
+def _parse_critique(raw_text: str) -> tuple[dict | None, list[str]]:
+    """Parse the critic's JSON. Never throws."""
+    try:
+        data = extract_json(raw_text)
+    except ValueError as exc:
+        return None, [str(exc)]
+    if not isinstance(data, dict):
+        return None, ["critique response is not an object"]
+    verdict = data.get("verdict")
+    if verdict not in ("ok", "needs_fix"):
+        return None, [f"critique verdict must be 'ok'|'needs_fix', got {verdict!r}"]
+    issues = data.get("issues") or []
+    if not isinstance(issues, list):
+        issues = [str(issues)]
+    return {
+        "verdict": verdict,
+        "issues": [str(i) for i in issues][:10],
+        "fix_hint": str(data.get("fix_hint", ""))[:500],
+    }, []
+
+
+async def _critique(
+    router: ModelRouter, task: Task, workspace_view: str, diff: str
+) -> Critique | None:
+    """Run the critic. Returns None when the critique cannot be parsed —
+    a bad critique must never block the task, only skip the repair round."""
+    prompt = build_critic_prompt(task, workspace_view, diff)
+    response = await router.complete(
+        [{"role": "user", "content": prompt}],
+        purpose="critic",
+    )
+    parsed, _ = _parse_critique(response.text)
+    if parsed is None:
+        return None
+    return Critique(
+        verdict=parsed["verdict"],
+        issues=parsed["issues"],
+        fix_hint=parsed["fix_hint"],
+        response=response,
+    )
+
+
+async def _repair(
+    router: ModelRouter,
+    task: Task,
+    critique: Critique,
+    previous_raw: str,
+) -> tuple[WorkerResult | None, list[str], ModelResponse]:
+    """One bounded repair round. Returns (result, errors, response).
+
+    If the repair response is invalid JSON, fall back to the original —
+    the critic is a first pass, never a blocker.
+    """
+    prompt = build_repair_prompt(task, critique, previous_raw)
+    response = await router.complete(
+        [{"role": "user", "content": prompt}],
+        purpose="worker",
+    )
+    return (*_validate(response.text), response)
+
+
 # ----------------------------------------------------------------- worker ---
 async def execute_task(
     router: ModelRouter,
@@ -190,12 +304,37 @@ async def execute_task(
     for attempt_no in range(1, max_attempts + 1):
         response = await router.complete(messages, purpose="worker")
         result, errors = _validate(response.text)
-        attempts.append(
-            WorkAttempt(raw_text=response.text, response=response,
-                        errors=errors, result=result)
+        attempt = WorkAttempt(
+            raw_text=response.text, response=response,
+            errors=errors, result=result,
         )
+        attempts.append(attempt)
 
         if result is not None:
+            # ---- self-critique loop: one bounded repair round --------------
+            # Only for produced work with a diff to review; never for
+            # blocked/no_change_needed. A parse-failing critique skips the
+            # repair round (critic is a first pass, not a blocker). The
+            # extra model calls are recorded for cost attribution.
+            if (
+                settings.enable_critique
+                and result.produced_work
+                and result.diff
+            ):
+                critique = await _critique(router, task, workspace_view, result.diff)
+                if critique is not None:
+                    attempt.extra_calls.append(critique.response)
+                    attempt.critique_verdict = critique.verdict
+                    attempt.critique_issues = critique.issues
+                    if critique.wants_repair:
+                        repaired, repair_errors, repair_response = await _repair(
+                            router, task, critique, response.text
+                        )
+                        attempt.extra_calls.append(repair_response)
+                        attempt.repaired = True
+                        if repaired is not None:
+                            result = repaired  # use the repair, keep the attempt record
+            # ----------------------------------------------------------------
             applied = None
             if apply and result.produced_work:
                 # Applying can fail — a malformed diff is a real outcome the

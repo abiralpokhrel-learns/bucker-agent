@@ -143,6 +143,16 @@ class Settings:
         default_factory=lambda: int(_env("BUCKER_MAX_RETRIES", "2"))
     )
 
+    # --- self-critique loop (loop engineering) ------------------------------
+    #: Run the critic pass (cheap model review of the diff) before verifying.
+    #: Bounded to ONE repair round per attempt; disable with 0.
+    enable_critique: bool = field(
+        default_factory=lambda: _env("BUCKER_ENABLE_CRITIQUE", "1") == "1"
+    )
+    max_tokens_critic: int = field(
+        default_factory=lambda: int(_env("BUCKER_MAX_TOKENS_CRITIC", "600"))
+    )
+
     # --- api -------------------------------------------------------------
     api_token: str = field(default_factory=lambda: _env("BUCKER_API_TOKEN", "dev-token"))
 

@@ -49,6 +49,13 @@ def _summarize_payload(event_type: str, payload: dict) -> dict:
             "duration_ms": payload.get("duration_ms"),
             "details": payload.get("details"),
         }
+    if event_type == "CritiqueCompleted":
+        return {
+            "attempt": payload.get("attempt"),
+            "verdict": payload.get("verdict"),
+            "issues": payload.get("issues"),
+            "repaired": payload.get("repaired"),
+        }
     return dict(payload)
 
 
@@ -119,6 +126,10 @@ def trajectory_to_markdown(trajectory: dict[str, Any]) -> str:
             verdict = "PASSED" if e["event_type"] == "VerificationPassed" else "FAILED"
             detail = (f"{verdict} via {payload.get('verifier', '')} "
                       f"attempt {payload.get('attempt')}")
+        elif e["event_type"] == "CritiqueCompleted":
+            detail = (f"critic={payload.get('verdict')} issues="
+                      f"{len(payload.get('issues') or [])} "
+                      f"repaired={payload.get('repaired')}")
         else:
             detail = json.dumps(payload)[:100]
         lines.append(

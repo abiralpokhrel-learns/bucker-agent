@@ -152,6 +152,7 @@ class ModelRouter:
         return {
             "planner": settings.max_tokens_planner,
             "worker": settings.max_tokens_worker,
+            "critic": settings.max_tokens_critic,
         }.get(purpose, settings.max_tokens_default)
 
     # ---------------------------------------------------------------------

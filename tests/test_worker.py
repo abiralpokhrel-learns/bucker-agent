@@ -16,6 +16,8 @@ from bucker.router.client import ModelResponse
 from bucker.sandbox.runtime import DockerSandbox
 from bucker.worker_agent import (
     WorkFailed,
+    _parse_critique,
+    build_critic_prompt,
     build_prompt,
     build_workspace_view,
     execute_task,
@@ -42,17 +44,37 @@ PRODUCED = {
 
 
 class FakeRouter:
-    def __init__(self, responses: list[str], cost: float = 0.01) -> None:
+    def __init__(
+        self,
+        responses: list[str],
+        cost: float = 0.01,
+        critic_verdict: str = "ok",
+        critic_text: str | None = None,
+    ) -> None:
         self._responses = list(responses)
         self._cost = cost
+        self._critic_verdict = critic_verdict
+        self._critic_text = critic_text
         self.calls: list[list[dict]] = []
+        self.purposes: list[str] = []
         self.model = "fake-model"
         self.mode = "recorded"
 
     async def complete(self, messages, *, purpose, **kwargs) -> ModelResponse:
         self.calls.append(messages)
+        self.purposes.append(purpose)
+        if purpose == "critic":
+            text = self._critic_text or json.dumps({
+                "verdict": self._critic_verdict, "issues": [], "fix_hint": "",
+            })
+            return ModelResponse(
+                text=text, model=self.model, cost_usd=0.0, latency_ms=5,
+                raw_ref="sha256:" + "0" * 64, request_ref="sha256:" + "1" * 64,
+                from_recording=True,
+            )
+        text = self._responses.pop(0)
         return ModelResponse(
-            text=self._responses.pop(0),
+            text=text,
             model=self.model,
             cost_usd=self._cost,
             latency_ms=5,
@@ -164,6 +186,96 @@ async def test_cost_accumulates_across_attempts(sandbox):
     router = FakeRouter([broken, json.dumps(PRODUCED)], cost=0.03)
     outcome = await execute_task(router, TASK, sandbox, apply=False)
     assert outcome.cost_usd == pytest.approx(0.06)
+
+
+# ------------------------------------------------------- self-critique loop --
+
+
+def test_parse_critique_accepts_ok_and_needs_fix():
+    parsed, errors = _parse_critique(
+        '{"verdict": "needs_fix", "issues": ["bad hunk count"], '
+        '"fix_hint": "fix the hunk"}'
+    )
+    assert errors == []
+    assert parsed["verdict"] == "needs_fix"
+    assert parsed["issues"] == ["bad hunk count"]
+
+    parsed, _ = _parse_critique('{"verdict": "ok", "issues": []}')
+    assert parsed["verdict"] == "ok"
+
+
+def test_parse_critique_rejects_garbage_without_throwing():
+    parsed, errors = _parse_critique("not json at all {")
+    assert parsed is None and errors
+    parsed, errors = _parse_critique('{"verdict": "maybe"}')
+    assert parsed is None and errors
+    parsed, errors = _parse_critique("42")
+    assert parsed is None and errors
+
+
+async def test_critique_ok_does_not_repair(sandbox):
+    """Critic says ok -> the original diff is used, no repair round."""
+    router = FakeRouter([json.dumps(PRODUCED)])
+    outcome = await execute_task(router, TASK, sandbox, apply=False)
+    assert outcome.attempts[0].critique_verdict == "ok"
+    assert outcome.attempts[0].repaired is False
+    assert outcome.result.diff == PRODUCED["diff"]
+    assert router.purposes == ["worker", "critic"]
+
+
+async def test_critique_needs_fix_triggers_one_repair_round(sandbox):
+    """Critic finds issues -> one bounded repair round replaces the diff."""
+    flawed = json.dumps({**PRODUCED, "diff": "--- a/wrong.py\\n+++ b/wrong.py\\n"})
+    fixed = json.dumps({**PRODUCED, "diff": "--- a/calc.py\\n+++ b/calc.py\\n@@ -1 +1 @@\\n"})
+    router = FakeRouter(
+        [flawed, fixed],
+        critic_verdict="needs_fix",
+        critic_text='{"verdict": "needs_fix", '
+                    '"issues": ["diff targets wrong file"], '
+                    '"fix_hint": "target calc.py"}',
+    )
+    outcome = await execute_task(router, TASK, sandbox, apply=False)
+    attempt = outcome.attempts[0]
+    assert attempt.critique_verdict == "needs_fix"
+    assert attempt.critique_issues == ["diff targets wrong file"]
+    assert attempt.repaired is True
+    assert outcome.result.diff != PRODUCED["diff"]  # the repair replaced it
+    assert router.purposes == ["worker", "critic", "worker"]
+
+
+async def test_critique_parse_failure_skips_repair(sandbox):
+    """A garbage critique must never block the task — original diff is used."""
+    router = FakeRouter(
+        [json.dumps(PRODUCED)],
+        critic_text="this is not json {",
+    )
+    outcome = await execute_task(router, TASK, sandbox, apply=False)
+    assert outcome.attempts[0].critique_verdict is None
+    assert outcome.attempts[0].repaired is False
+    assert outcome.result.diff == PRODUCED["diff"]
+    assert router.purposes == ["worker", "critic"]
+
+
+async def test_critique_disabled_via_config(sandbox, monkeypatch):
+    """BUCKER_ENABLE_CRITIQUE=0 restores the old single-call loop."""
+    from bucker.config import settings
+
+    # Settings is frozen — reach the field via object.__setattr__.
+    object.__setattr__(settings, "enable_critique", False)
+    try:
+        router = FakeRouter([json.dumps(PRODUCED)])
+        outcome = await execute_task(router, TASK, sandbox, apply=False)
+        assert router.purposes == ["worker"]
+        assert outcome.attempts[0].critique_verdict is None
+    finally:
+        object.__setattr__(settings, "enable_critique", True)
+
+
+def test_critic_prompt_contains_the_diff():
+    prompt = build_critic_prompt(TASK, "workspace view", "--- a/calc.py\\n+++ b/calc.py\\n")
+    assert "PROPOSED DIFF" in prompt
+    assert "calc.py" in prompt
+    assert "automated verifier" in prompt
 
 
 # ------------------------------------------------------------------ prompt --

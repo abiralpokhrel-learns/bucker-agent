@@ -93,6 +93,53 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int,
                     usage=att.response.usage,
                 )
 
+            # Self-critique loop: the critic verdict + any extra model calls
+            # (critic pass, repair round) get their own events + telemetry.
+            if att.critique_verdict is not None:
+                await store.append(
+                    tid,
+                    EventType.CRITIQUE_COMPLETED,
+                    {
+                        "attempt": i + 1,
+                        "verdict": att.critique_verdict,
+                        "issues": att.critique_issues,
+                        "repaired": att.repaired,
+                    },
+                    tool_output_ref=(
+                        att.extra_calls[0].raw_ref if att.extra_calls else None
+                    ),
+                    idempotency_key=f"{task_id}:work-{attempt}-critique-{i + 1}",
+                )
+            for j, call in enumerate(att.extra_calls):
+                call_purpose = "critic" if j == 0 else "worker"  # repair is a worker call
+                call_event = await store.append(
+                    tid,
+                    EventType.MODEL_CALL_COMPLETED,
+                    {
+                        "purpose": call_purpose,
+                        "model": call.model,
+                        "cost_usd": call.cost_usd,
+                        "latency_ms": call.latency_ms,
+                        "from_recording": call.from_recording,
+                        "usage": call.usage,
+                    },
+                    tool_output_ref=call.raw_ref,
+                    idempotency_key=(
+                        f"{task_id}:work-{attempt}-critic-call-{i + 1}-{j + 1}"
+                    ),
+                )
+                async with store._pool.acquire() as conn:
+                    await record_model_call(
+                        conn,
+                        event_id=call_event.id,
+                        task_id=tid,
+                        model=call.model,
+                        latency_ms=call.latency_ms,
+                        cost_usd=call.cost_usd,
+                        purpose=call_purpose,
+                        usage=call.usage,
+                    )
+
         if outcome.applied is not None:
             tool_event = await store.append(
                 tid,
