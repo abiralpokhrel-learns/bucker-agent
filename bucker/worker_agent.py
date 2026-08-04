@@ -110,7 +110,47 @@ def build_prompt(task: Task, workspace_view: str) -> str:
         contract=json.dumps(task.model_dump(), indent=2),
         workspace=workspace_view,
         objective=task.objective,
+        skills=_skills_section(task.objective),
+        context_facts=_facts_section(task.objective),
     )
+
+
+# ------------------------------------------------- memory injection (harness) --
+
+
+def _skills_section(objective: str) -> str:
+    """Procedural memory: matched skills become part of working memory.
+
+    Empty when no skills match — the worker behaves exactly as before, so
+    enabling the memory system changes nothing until a skill is added.
+    """
+    try:
+        from bucker.memory.skills import SkillStore
+
+        skills = SkillStore().for_objective(objective, limit=3)
+    except Exception:
+        return "(no skills loaded)"
+    if not skills:
+        return "(none)"
+    blocks = []
+    for s in skills:
+        blocks.append(
+            f"### {s.name}\n\n{s.description}\n\n{s.body}\n"
+        )
+    return "\n".join(blocks)
+
+
+def _facts_section(objective: str) -> str:
+    """Semantic memory: durable facts relevant to this objective."""
+    try:
+        from bucker.memory.facts import MemoryStore
+
+        facts = MemoryStore().context_for(objective, limit=5)
+    except Exception:
+        return "(no facts loaded)"
+    if not facts:
+        return "(none)"
+    return "\n".join(f"- {f['text']}" for f in facts)
 
 
 # ------------------------------------------------------------- validation ---

@@ -439,6 +439,8 @@ def render_system_page(status: dict) -> str:
   <a class="btn" href="/">overview</a>
   <a class="btn" href="/usage">usage</a>
   <a class="btn" href="/models-page">models</a>
+  <a class="btn" href="/memory-page">memory</a>
+  <a class="btn" href="/skills-page">skills</a>
   <a class="btn" href="/schedules-page">schedules</a>
   <a class="btn" href="/system">system</a>
   <a class="btn" href="/tasks/new">+ new task</a>
@@ -666,6 +668,139 @@ def render_models_page(
 </div>
 """
     return _page("Models", body)
+
+
+# -------------------------------------------------------------- skills page --
+
+
+def render_skills_page(skills: list) -> str:
+    """Procedural memory: what the worker knows how to do, viewable/editable.
+
+    Skills are the harness's learned procedures (Hermes-style SKILL.md).
+    The page lists them with a create form that hits the JSON API.
+    """
+    if skills:
+        rows = "".join(
+            f'<div class="status-row"><span class="label mono">{_esc(s["name"])}</span>'
+            f'<span class="detail">{_esc(s["description"])}</span></div>'
+            for s in skills
+        )
+    else:
+        rows = ('<div class="muted">no skills yet — skills are procedures the '
+                "worker follows when an objective matches. Create one below "
+                "or with <code>bucker skills new</code>.</div>")
+
+    body = """
+<header class="top">
+  <h1>skills</h1>
+  <span class="tag">procedural memory</span>
+  <span class="spacer"></span>
+  <a class="btn" href="/">overview</a>
+  <a class="btn" href="/memory-page">memory</a>
+</header>
+
+<div class="panel"><h2>Skills</h2>%(rows)s</div>
+
+<div class="panel">
+  <h2>Add a skill</h2>
+  <form id="sf" onsubmit="createSkill(event)">
+    <label class="fld"><span>Name <span class="muted">— slug, e.g. fix-failing-tests</span></span>
+      <input name="name" required minlength="3"></label>
+    <label class="fld"><span>Description <span class="muted">— when the worker should use it</span></span>
+      <input name="description" required minlength="3"></label>
+    <label class="fld"><span>Procedure <span class="muted">— steps, one per line</span></span>
+      <textarea name="procedure" rows="6" required minlength="3"></textarea></label>
+    <button type="submit" class="primary">Create skill</button>
+  </form>
+  <div id="sout"></div>
+</div>
+
+<script>
+async function createSkill(ev) {
+  ev.preventDefault();
+  const params = new URLSearchParams(new FormData(ev.target));
+  const out = document.getElementById('sout');
+  try {
+    const resp = await fetch('/skills?' + params.toString(), { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      out.innerHTML = '<div class="alert err">' + (data.detail || resp.status) + '</div>';
+      return;
+    }
+    out.innerHTML = '<div class="alert ok">skill <b>' + data.skill.name + '</b> created</div>';
+    setTimeout(() => location.reload(), 800);
+  } catch (err) {
+    out.innerHTML = '<div class="alert err">' + err + '</div>';
+  }
+}
+</script>
+""" % {"rows": rows}
+    return _page("Skills", body)
+
+
+# -------------------------------------------------------------- memory page --
+
+
+def render_memory_page(facts: list) -> str:
+    """Semantic memory: durable facts, viewable and searchable.
+
+    The harness's long-term memory (Hermes-style): facts persist across
+    sessions, injected into planner/worker context when relevant.
+    """
+    if facts:
+        rows = "".join(
+            f'<div class="status-row"><span class="label mono">{_esc(f["id"][:8])}</span>'
+            f'<span class="detail">{_esc(f["text"])}</span>'
+            f'<span class="detail muted">{_esc(f["source"])}</span></div>'
+            for f in facts
+        )
+    else:
+        rows = ('<div class="muted">no facts yet — add them with '
+                "<code>bucker memory add \"&lt;durable fact&gt;\"</code> "
+                "or the form below.</div>")
+
+    body = """
+<header class="top">
+  <h1>memory</h1>
+  <span class="tag">semantic memory</span>
+  <span class="spacer"></span>
+  <a class="btn" href="/">overview</a>
+  <a class="btn" href="/skills-page">skills</a>
+</header>
+
+<div class="panel"><h2>Facts</h2>%(rows)s</div>
+
+<div class="panel">
+  <h2>Add a fact</h2>
+  <form id="mf" onsubmit="createFact(event)">
+    <label class="fld"><span>Fact <span class="muted">— one durable truth, e.g. 'tests run with pytest'</span></span>
+      <input name="text" required minlength="1"></label>
+    <button type="submit" class="primary">Store fact</button>
+  </form>
+  <div id="mout"></div>
+</div>
+
+<script>
+async function createFact(ev) {
+  ev.preventDefault();
+  const params = new URLSearchParams(new FormData(ev.target));
+  const out = document.getElementById('mout');
+  try {
+    const resp = await fetch('/memory?' + params.toString(), { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      out.innerHTML = '<div class="alert err">' + (data.detail || resp.status) + '</div>';
+      return;
+    }
+    out.innerHTML = '<div class="alert ok">stored fact ' + data.fact_id.slice(0, 8) + '</div>';
+    setTimeout(() => location.reload(), 800);
+  } catch (err) {
+    out.innerHTML = '<div class="alert err">' + err + '</div>';
+  }
+}
+</script>
+""" % {"rows": rows}
+    return _page("Memory", body)
 
 
 # ------------------------------------------------------------- usage page --
@@ -972,6 +1107,7 @@ setTimeout(function () { location.reload(); }, 4000);
   <a class="btn" href="/usage">usage</a>
   <a class="btn" href="/system">system</a>
   <a class="btn" href="/tasks/{_esc(task_id)}/events">events json</a>
+  <a class="btn" href="/tasks/{_esc(task_id)}/trajectory?format=md">trajectory</a>
   <a class="btn" href="/tasks/{_esc(task_id)}/replay">replay</a>
 </header>
 

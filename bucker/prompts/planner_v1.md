@@ -40,6 +40,10 @@ Registered verifiers: $verifiers
 Default budget: $default_budget_usd USD
 Default deadline: $default_deadline_minutes minutes
 
+KNOWN FACTS ABOUT THIS PROJECT
+------------------------------
+$context_facts
+
 OBJECTIVE
 ---------
 $objective

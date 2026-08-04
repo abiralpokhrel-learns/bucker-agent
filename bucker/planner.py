@@ -255,7 +255,21 @@ def build_prompt(objective: str, *, verifiers: tuple[str, ...] = KNOWN_VERIFIERS
         verifiers=", ".join(verifiers),
         default_budget_usd=settings.default_budget_usd,
         default_deadline_minutes=settings.default_deadline_minutes,
+        context_facts=_facts_section(objective),
     )
+
+
+def _facts_section(objective: str) -> str:
+    """Semantic memory as planner context: relevant durable facts."""
+    try:
+        from bucker.memory.facts import MemoryStore
+
+        facts = MemoryStore().context_for(objective, limit=5)
+    except Exception:
+        return "(no facts loaded)"
+    if not facts:
+        return "(none)"
+    return "\n".join(f"- {f['text']}" for f in facts)
 
 
 def build_repair_prompt(previous: str, errors: list[str]) -> str:

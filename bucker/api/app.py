@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_404_NOT_FOUND, HTTP_409_CONFLICT
@@ -857,6 +857,143 @@ async def models_page(
         providers=provider_info["providers"],
         suggested_chain=provider_info["suggested_chain"],
     )
+
+
+# ------------------------------------------------------------------ skills --
+
+
+@app.get("/skills")
+async def list_skills(
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Procedural memory: skills the worker can apply."""
+    _check_auth(creds)
+    from bucker.memory.skills import SkillStore
+
+    return {"skills": [s.as_dict() for s in SkillStore().list()]}
+
+
+@app.post("/skills")
+async def create_skill(
+    name: str = Query(..., min_length=3, max_length=64),
+    description: str = Query(..., min_length=3, max_length=200),
+    procedure: str = Query(..., min_length=3, max_length=2000),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Create a skill (procedural memory)."""
+    _check_auth(creds)
+    from bucker.memory.skills import SkillStore
+
+    try:
+        skill = SkillStore().add(name, description, procedure.replace("\\n", "\n"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"skill": skill.as_dict(), "created": True}
+
+
+@app.get("/skills/{name}")
+async def get_skill(
+    name: str,
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    _check_auth(creds)
+    from bucker.memory.skills import SkillStore
+
+    skill = SkillStore().get(name)
+    if skill is None:
+        raise HTTPException(status_code=404, detail=f"no skill named {name!r}")
+    return {"skill": skill.as_dict()}
+
+
+# ------------------------------------------------------------------ memory --
+
+
+@app.get("/memory")
+async def list_facts(
+    q: str | None = Query(None, description="keyword search"),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Semantic memory: durable facts across sessions."""
+    _check_auth(creds)
+    from bucker.memory.facts import MemoryStore
+
+    store = MemoryStore()
+    facts = store.search(q) if q else store.list()
+    return {"facts": facts, "count": len(facts)}
+
+
+@app.post("/memory")
+async def add_fact(
+    text: str = Query(..., min_length=1, max_length=500),
+    source: str = Query("user", max_length=100),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    _check_auth(creds)
+    from bucker.memory.facts import MemoryStore
+
+    try:
+        fact_id = MemoryStore().add(text, source=source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"fact_id": fact_id, "stored": True}
+
+
+# --------------------------------------------------------------- trajectory --
+
+
+@app.get("/tasks/{task_id}/trajectory")
+async def task_trajectory(
+    task_id: UUID,
+    format: str = Query("json", pattern="^(json|md|jsonl)$"),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+):
+    """The full trace of one run: model calls, tools, verdicts, in order."""
+    _check_auth(creds)
+    from bucker.core.trajectory import (
+        export_trajectory,
+        trajectory_to_jsonl,
+        trajectory_to_markdown,
+    )
+
+    trajectory = await export_trajectory(task_id, _get_store())
+    if not trajectory["events"]:
+        raise HTTPException(status_code=404, detail="task not found or has no events")
+
+    if format == "md":
+        return Response(
+            content=trajectory_to_markdown(trajectory),
+            media_type="text/markdown",
+        )
+    if format == "jsonl":
+        return Response(
+            content=trajectory_to_jsonl(trajectory),
+            media_type="application/x-ndjson",
+        )
+    return trajectory
+
+
+@app.get("/memory-page", response_class=HTMLResponse)
+async def memory_page(
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> str:
+    """Semantic memory page."""
+    _check_auth(creds)
+    from bucker.api.dashboard import render_memory_page
+    from bucker.memory.facts import MemoryStore
+
+    return render_memory_page(MemoryStore().list())
+
+
+@app.get("/skills-page", response_class=HTMLResponse)
+async def skills_page(
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> str:
+    """Procedural memory page."""
+    _check_auth(creds)
+    from bucker.api.dashboard import render_skills_page
+    from bucker.memory.skills import SkillStore
+
+    return render_skills_page([s.as_dict() for s in SkillStore().list()])
 
 
 @app.get("/api/system")

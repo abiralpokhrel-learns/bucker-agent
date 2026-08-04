@@ -649,6 +649,81 @@ def test_models_page_renders_tiers(client):
     assert "local" in resp.text and "free" in resp.text and "paid" in resp.text
 
 
+# --------------------------------------------------- memory / skills API --
+
+
+def test_memory_api_add_and_list(client, tmp_path):
+    """Semantic memory over HTTP: store + list + search."""
+    from bucker.memory.facts import MemoryStore
+
+    orig_root = MemoryStore.default_root
+    MemoryStore.default_root = tmp_path / "memory"
+    try:
+        resp = client.post("/memory", params={"text": "tests run with pytest"})
+        assert resp.status_code == 200
+        assert resp.json()["stored"] is True
+
+        listed = client.get("/memory")
+        assert listed.status_code == 200
+        assert listed.json()["count"] == 1
+
+        found = client.get("/memory", params={"q": "pytest"})
+        assert found.json()["count"] == 1
+        missed = client.get("/memory", params={"q": "nonexistent"})
+        assert missed.json()["count"] == 0
+    finally:
+        MemoryStore.default_root = orig_root
+
+
+def test_skills_api_create_and_list(client, tmp_path):
+    """Procedural memory over HTTP: create + list + fetch."""
+    from bucker.memory.skills import SkillStore
+
+    orig_root = SkillStore.default_root
+    SkillStore.default_root = tmp_path / "skills"
+    try:
+        resp = client.post(
+            "/skills",
+            params={
+                "name": "fix-tests",
+                "description": "Repair a failing test suite",
+                "procedure": "1. run tests\\n2. fix root cause",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["created"] is True
+
+        listed = client.get("/skills")
+        assert listed.json()["skills"][0]["name"] == "fix-tests"
+
+        one = client.get("/skills/fix-tests")
+        assert one.json()["skill"]["description"].startswith("Repair")
+
+        bad = client.post(
+            "/skills",
+            params={"name": "Bad Name!", "description": "desc", "procedure": "proc"},
+        )
+        assert bad.status_code == 400
+    finally:
+        SkillStore.default_root = orig_root
+
+
+def test_memory_and_skills_pages_render(client, tmp_path):
+    from bucker.memory.facts import MemoryStore
+
+    orig_root = MemoryStore.default_root
+    MemoryStore.default_root = tmp_path / "memory"
+    try:
+        resp = client.get("/memory-page")
+        assert resp.status_code == 200
+        assert "semantic memory" in resp.text.lower() or "Facts" in resp.text
+        resp = client.get("/skills-page")
+        assert resp.status_code == 200
+        assert "Add a skill" in resp.text
+    finally:
+        MemoryStore.default_root = orig_root
+
+
 def test_new_task_page_renders_template_cards(client):
     resp = client.get("/tasks/new")
     assert resp.status_code == 200

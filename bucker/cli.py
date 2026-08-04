@@ -400,6 +400,138 @@ async def cmd_schedules_pause(args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------ memory + skills + export --
+
+
+async def cmd_memory_add(args: argparse.Namespace) -> int:
+    from bucker.memory.facts import MemoryStore
+
+    try:
+        fact_id = MemoryStore().add(args.text, source=args.source)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"stored fact {fact_id}")
+    return 0
+
+
+async def cmd_memory_list(args: argparse.Namespace) -> int:
+    from bucker.memory.facts import MemoryStore
+
+    facts = MemoryStore().list()
+    if not facts:
+        print("no facts yet — `bucker memory add \"<durable fact>\"`")
+        return 0
+    for f in facts:
+        print(f"[{f['id'][:8]}] ({f['source']}) {f['text']}")
+    print(f"\n{len(facts)} facts")
+    return 0
+
+
+async def cmd_memory_search(args: argparse.Namespace) -> int:
+    from bucker.memory.facts import MemoryStore
+
+    facts = MemoryStore().search(args.query)
+    if not facts:
+        print(f"no facts matching {args.query!r}")
+        return 1
+    for f in facts:
+        print(f"[{f['id'][:8]}] ({f['source']}) {f['text']}")
+    return 0
+
+
+async def cmd_memory_consolidate(args: argparse.Namespace) -> int:
+    from bucker.memory.consolidate import consolidate_task
+    from bucker.memory.facts import MemoryStore
+
+    pool = await create_pool(settings.database_url)
+    try:
+        store = EventStore(pool)
+        result = await consolidate_task(
+            args.task_id, store, MemoryStore(), force=args.force,
+        )
+    finally:
+        await pool.close()
+
+    if result.already_done:
+        print(f"task {args.task_id} already consolidated (--force to redo)")
+        return 0
+    for fact_id in result.facts_added:
+        print(f"fact added: {fact_id}")
+    for proposal in result.skill_proposals:
+        print(f"skill proposal: {proposal['name']} — {proposal['why'][:80]}")
+    if not result.facts_added and not result.skill_proposals:
+        print("nothing to consolidate (task has no objective/verdict events)")
+    return 0
+
+
+async def cmd_skills_list(args: argparse.Namespace) -> int:
+    from bucker.memory.skills import SkillStore
+
+    skills = SkillStore().list()
+    if not skills:
+        print("no skills yet — `bucker skills new <name> --description ... --procedure ...`")
+        return 0
+    for s in skills:
+        print(f"{s.name:<28} {s.description[:70]}")
+    print(f"\n{len(skills)} skills")
+    return 0
+
+
+async def cmd_skills_show(args: argparse.Namespace) -> int:
+    from bucker.memory.skills import SkillStore
+
+    skill = SkillStore().get(args.name)
+    if skill is None:
+        print(f"no skill named {args.name!r}", file=sys.stderr)
+        return 1
+    print(f"# {skill.name}\n")
+    print(skill.description + "\n")
+    print(skill.body)
+    return 0
+
+
+async def cmd_skills_new(args: argparse.Namespace) -> int:
+    from bucker.memory.skills import SkillStore
+
+    procedure = args.procedure.replace("\\n", "\n")
+    try:
+        skill = SkillStore().add(args.name, args.description, procedure)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"skill {skill.name} created — the worker will apply it when an "
+          f"objective mentions: {skill.description[:60]}")
+    return 0
+
+
+async def cmd_export(args: argparse.Namespace) -> int:
+    """Export a task's trajectory: markdown, JSON, or JSONL."""
+    from bucker.core.trajectory import (
+        export_trajectory,
+        trajectory_to_jsonl,
+        trajectory_to_markdown,
+    )
+
+    pool = await create_pool(settings.database_url)
+    try:
+        store = EventStore(pool)
+        trajectory = await export_trajectory(UUID(args.task_id), store)
+    finally:
+        await pool.close()
+
+    if not trajectory["events"]:
+        print(f"task {args.task_id} has no events", file=sys.stderr)
+        return 1
+    if args.format == "md":
+        print(trajectory_to_markdown(trajectory))
+    elif args.format == "jsonl":
+        print(trajectory_to_jsonl(trajectory), end="")
+    else:
+        print(json.dumps(trajectory, indent=2, default=str))
+    return 0
+
+
 # ----------------------------------------------------------------- main ----
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bucker", description="bucker-agent CLI")
@@ -492,6 +624,41 @@ def build_parser() -> argparse.ArgumentParser:
                          "BUCKER_MODEL_FALLBACKS only; other lines untouched)")
     su.add_argument("--env", default=None, help="path to .env (default: project .env)")
     su.set_defaults(func=cmd_setup)
+
+    mem = sub.add_parser("memory", help="semantic memory: durable facts across sessions")
+    mem_sub = mem.add_subparsers(dest="memory_cmd", required=True)
+    mem_add = mem_sub.add_parser("add", help="store a fact")
+    mem_add.add_argument("text")
+    mem_add.add_argument("--source", default="user")
+    mem_add.set_defaults(func=cmd_memory_add)
+    mem_ls = mem_sub.add_parser("list", help="list all facts")
+    mem_ls.set_defaults(func=cmd_memory_list)
+    mem_se = mem_sub.add_parser("search", help="keyword search")
+    mem_se.add_argument("query")
+    mem_se.set_defaults(func=cmd_memory_search)
+    mem_co = mem_sub.add_parser("consolidate", help="distill a task's run into facts")
+    mem_co.add_argument("task_id")
+    mem_co.add_argument("--force", action="store_true")
+    mem_co.set_defaults(func=cmd_memory_consolidate)
+
+    sk = sub.add_parser("skills", help="procedural memory: skills the worker follows")
+    sk_sub = sk.add_subparsers(dest="skill_cmd", required=True)
+    sk_ls = sk_sub.add_parser("list", help="list skills")
+    sk_ls.set_defaults(func=cmd_skills_list)
+    sk_sh = sk_sub.add_parser("show", help="show one skill")
+    sk_sh.add_argument("name")
+    sk_sh.set_defaults(func=cmd_skills_show)
+    sk_new = sk_sub.add_parser("new", help="create a skill")
+    sk_new.add_argument("name")
+    sk_new.add_argument("--description", required=True)
+    sk_new.add_argument("--procedure", required=True,
+                        help="the steps (\\n separates lines)")
+    sk_new.set_defaults(func=cmd_skills_new)
+
+    ex = sub.add_parser("export", help="export a task's trajectory (LLM ops trace)")
+    ex.add_argument("task_id")
+    ex.add_argument("--format", default="md", choices=["md", "json", "jsonl"])
+    ex.set_defaults(func=cmd_export)
 
     return p
 

@@ -247,6 +247,65 @@ deterministic re-run), `cancel_task`, `system_status`. Register it in your
 agent as a stdio MCP server; it talks to Postgres + Temporal directly, no
 HTTP server needed.
 
+## Memory & skills (the harness layer)
+
+bucker keeps learning across sessions, Hermes-style, with local files you
+own (in `memory/` and `skills/`, git-ignored):
+
+| memory | what | where |
+|---|---|---|
+| **working** | the task's contract + workspace + event stream | per task (durable) |
+| **procedural** | skills: procedures the worker follows when an objective matches | `skills/<name>/SKILL.md` |
+| **semantic** | facts about the user/project, injected into planner+worker prompts | `memory/*.md` |
+| **episodic** | the append-only event store — every run, exactly once | Postgres |
+
+```bash
+bucker memory add "this project's tests run with pytest"
+bucker memory list / search <kw>
+bucker memory consolidate <task_id>   # distill a run into facts (idempotent)
+bucker skills list / show <name>
+bucker skills new fix-failing-tests \
+  --description "Repair a failing test suite" \
+  --procedure "1. run the tests\n2. read the first failure\n3. fix the root cause"
+```
+
+How it works: when a task starts, skills whose description overlaps the
+objective are injected into the worker prompt (procedural memory becomes
+part of working memory), and relevant facts are injected into both the
+planner and worker prompts. A failed verification run can be consolidated
+into a durable fact and a *skill proposal* — self-improvement, but a human
+always says yes before a skill is created.
+
+## Tracing (LLM ops)
+
+Every run is a trajectory: model calls with tokens and cost, tool calls,
+verdicts, in order. Export it for debugging or audits:
+
+```bash
+bucker export <task_id>                # markdown
+bucker export <task_id> --format json  # full structured trace
+bucker export <task_id> --format jsonl # one event per line
+```
+
+Or from the API: `GET /tasks/{id}/trajectory?format=md|json|jsonl`. The
+task dashboard links to it. Trajectories are a projection of the
+append-only event store — exporting never mutates anything.
+
+## Multi-platform access (gateway)
+
+One platform, four doors:
+
+- **Web dashboard** — `uv run uvicorn bucker.api.app:app --port 8000`
+  (overview, tasks, models, memory, skills, schedules, system)
+- **CLI** — `bucker` (start/show/events/replay/tasks/usage/models/
+  providers/setup/memory/skills/schedules/export/doctor)
+- **MCP** — any agent that speaks MCP (Claude, Hermes, Cursor) delegates
+  tasks to bucker's verified pipeline (`uv run python -m bucker.mcp.server`)
+- **REST API** — `/docs` for the full OpenAPI surface
+
+All data lives locally: Postgres (events, telemetry), the blob store
+(recordings), and markdown (memory, skills). No cloud, no telemetry home.
+
 ## Models & providers — free, paid, local
 
 bucker runs any model the router can reach, from three tiers:

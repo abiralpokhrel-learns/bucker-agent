@@ -7,6 +7,10 @@
 blobstore/
 workspace/
 evaluation_results/
+# Local memory + skills (user-owned data at repo root, git-ignored by design)
+# NOTE: root-anchored — bucker/memory/ is source code and must be tracked.
+/memory/
+/skills/
 *.log
 
 # Recorded model responses. Deliberately NOT committed by default: they are
