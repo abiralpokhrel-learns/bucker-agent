@@ -149,6 +149,15 @@ pre { background: var(--panel2); border: 1px solid var(--border);
 .check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px;
          color: var(--muted); margin: 4px 0 16px; }
 .check input { width: auto; margin-top: 3px; }
+.tmpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+             gap: 10px; margin: 8px 0 18px; }
+.tmpl { display: flex; flex-direction: column; gap: 6px; text-align: left; cursor: pointer;
+        background: rgba(255,255,255,.03); border: 1px solid var(--border);
+        border-radius: 8px; padding: 12px; font: inherit; color: inherit; }
+.tmpl:hover { border-color: rgba(112,170,255,.6); background: rgba(112,170,255,.06); }
+.tmpl b { font-size: 14px; }
+.tmpl span { font-size: 12px; color: var(--muted); line-height: 1.4; }
+.tmpl code { font-size: 11px; color: #7ee0a3; }
 /* empty state */
 .cta { text-align: center; padding: 34px 20px; }
 .cta .big { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
@@ -428,8 +437,9 @@ def render_system_page(status: dict) -> str:
   <span class="spacer"></span>
   <a class="btn" href="/">overview</a>
   <a class="btn" href="/usage">usage</a>
+  <a class="btn" href="/schedules-page">schedules</a>
+  <a class="btn" href="/system">system</a>
   <a class="btn" href="/tasks/new">+ new task</a>
-  <a class="btn" href="/docs">api</a>
 </header>
 
 {degraded_html}
@@ -460,6 +470,113 @@ def render_system_page(status: dict) -> str:
 </div>
 """
     return _page("System", body)
+
+
+# --------------------------------------------------------- schedules page --
+
+
+def render_schedules_page(
+    schedules: list,
+    *,
+    templates: list | None = None,
+    temporal_ok: bool = True,
+) -> str:
+    """Recurring tasks: what runs, when, and a form to add one.
+
+    Schedules live in Temporal (the durable source of truth); this page
+    renders them + the creation form (template + cron). The create/delete
+    buttons hit the JSON API from the browser.
+    """
+    templates = templates or []
+
+    if not temporal_ok:
+        rows = ('<div class="alert err"><b>Temporal is not reachable</b> — '
+                "schedules are stored in Temporal, so they cannot be listed "
+                "or created until it is running "
+                "(<code>temporal server start-dev</code>).</div>")
+    elif not schedules:
+        rows = '<div class="muted">no schedules yet — create one below</div>'
+    else:
+        rows = "".join(
+            f'<div class="status-row"><span class="label mono">{_esc(s["schedule_id"])}</span>'
+            f'<span class="detail">{"paused" if s.get("paused") else "active"}</span>'
+            f'<span class="detail">'
+            f'<button class="mini" onclick="delSchedule(\'{_esc(s["schedule_id"])}\')">delete</button>'
+            f"</span></div>"
+            for s in schedules
+        )
+
+    template_opts = "".join(
+        f'<option value="{_esc(t["id"])}">{_esc(t["name"])} — {_esc(t.get("default_budget_usd") or "default")} USD</option>'
+        for t in templates
+    )
+    if not template_opts:
+        template_opts = '<option value="">(no templates registered)</option>'
+
+    body = """
+<header class="top">
+  <h1>schedules</h1>
+  <span class="tag">recurring verified tasks</span>
+  <span class="spacer"></span>
+  <a class="btn" href="/">overview</a>
+  <a class="btn" href="/tasks/new">+ new task</a>
+</header>
+
+%(rows)s
+
+<div class="panel">
+  <h2>Create a schedule</h2>
+  <form id="sf" onsubmit="createSchedule(event)">
+    <div class="grid2">
+      <label class="fld"><span>Schedule id <span class="muted">— stable, e.g. nightly-bench</span></span>
+        <input name="schedule_id" required minlength="3" placeholder="nightly-bench"></label>
+      <label class="fld"><span>Cron <span class="muted">— 5 fields, e.g. 0 9 * * 1-5</span></span>
+        <input name="cron" required value="0 9 * * *" placeholder="0 9 * * *"></label>
+      <label class="fld"><span>Template</span>
+        <select name="template">%(template_opts)s</select></label>
+      <label class="fld"><span>Objective override <span class="muted">— empty uses the template's</span></span>
+        <input name="objective" placeholder="(optional)"></label>
+      <label class="fld"><span>Budget (USD) <span class="muted">— per run</span></span>
+        <input type="number" name="budget_usd" step="0.01" min="0" placeholder="template default"></label>
+      <label class="fld"><span>Deadline (minutes) <span class="muted">— per run</span></span>
+        <input type="number" name="deadline_minutes" min="1" placeholder="template default"></label>
+    </div>
+    <button type="submit" class="primary">Create schedule</button>
+  </form>
+  <div id="sout"></div>
+</div>
+
+<script>
+async function createSchedule(ev) {
+  ev.preventDefault();
+  const params = new URLSearchParams(new FormData(ev.target));
+  const out = document.getElementById('sout');
+  try {
+    const resp = await fetch('/schedules?' + params.toString(), { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      out.innerHTML = '<div class="alert err">' + (data.detail || resp.status) + '</div>';
+      return;
+    }
+    out.innerHTML = '<div class="alert ok">schedule <b>' + data.schedule_id + '</b> created on ' + data.cron + '</div>';
+    setTimeout(() => location.reload(), 800);
+  } catch (err) {
+    out.innerHTML = '<div class="alert err">' + err + '</div>';
+  }
+}
+async function delSchedule(id) {
+  const out = document.getElementById('sout');
+  try {
+    const resp = await fetch('/schedules/' + id, { method: 'DELETE' });
+    if (resp.ok) { location.reload(); }
+    else { const d = await resp.json(); out.innerHTML = '<div class="alert err">' + (d.detail || resp.status) + '</div>'; }
+  } catch (err) {
+    out.innerHTML = '<div class="alert err">' + err + '</div>';
+  }
+}
+</script>
+""" % {"rows": rows, "template_opts": template_opts}
+    return _page("Schedules", body)
 
 
 # ------------------------------------------------------------- usage page --
@@ -857,17 +974,45 @@ async function runReplay() {{
 
 # ------------------------------------------------------------- new task page --
 
-def render_new_task_page() -> str:
-    """Form that POSTs to the JSON API from the browser."""
+def render_new_task_page(templates: list | None = None) -> str:
+    """Form that POSTs to the JSON API from the browser.
+
+    Templates render as clickable cards that prefill the form (objective,
+    type, and sensible limits) — one click to start a common job.
+    """
+    templates = templates or []
+    card_html = ""
+    if templates:
+        cards = []
+        for t in templates:
+            tid = t["id"]
+            cards.append(
+                '<button type="button" class="tmpl" '
+                f'onclick="applyTemplate(\'{tid}\')">'
+                f'<b>{_esc(t["name"])}</b>'
+                f'<span>{_esc(t["description"])}</span>'
+                f"<code>{_esc(t.get('default_budget_usd') or 'default')} USD · "
+                f"{_esc(str(t.get('default_deadline_minutes') or 'default'))} min</code>"
+                f"</button>"
+            )
+        card_html = (
+            '<div class="sec-title">Start from a template '
+            '<span class="hint">click a card to fill the form</span></div>'
+            '<div class="tmpl-grid">' + "".join(cards) + "</div>"
+        )
+
+    tpl_json = __import__("json").dumps(templates)
     body = """
 <header class="top">
   <h1>new task</h1>
   <span class="spacer"></span>
   <a class="btn" href="/">overview</a>
+  <a class="btn" href="/schedules-page">schedules</a>
 </header>
 
 <div class="panel">
   <h2>Create a task</h2>
+  %(card_html)s
   <form id="f" onsubmit="submitTask(event)">
     <div class="sec-title">The task</div>
     <label class="fld"><span>Objective</span>
@@ -906,6 +1051,21 @@ def render_new_task_page() -> str:
 </div>
 
 <script>
+const TEMPLATES = %(tpl_json)s;
+
+function applyTemplate(id) {
+  const t = TEMPLATES.find(x => x.id === id);
+  if (!t) return;
+  const form = document.getElementById('f');
+  form.objective.value = t.objective || '';
+  form.task_type.value = t.task_type || 'code_change';
+  if (t.default_budget_usd) form.budget_usd.value = t.default_budget_usd;
+  if (t.default_deadline_minutes) form.deadline_minutes.value = t.default_deadline_minutes;
+  if (t.default_max_retries != null) form.max_retries.value = t.default_max_retries;
+  document.getElementById('out').innerHTML =
+    '<div class="alert ok">template <b>' + t.name + '</b> loaded — review and submit</div>';
+}
+
 async function submitTask(ev) {
   ev.preventDefault();
   const form = ev.target;
@@ -927,5 +1087,5 @@ async function submitTask(ev) {
   }
 }
 </script>
-"""
+""" % {"card_html": card_html, "tpl_json": tpl_json}
     return _page("New task", body)

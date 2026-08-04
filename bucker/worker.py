@@ -25,8 +25,10 @@ from bucker.activities.pipeline import (
     run_worker,
 )
 from bucker.activities.planner import plan_task
+from bucker.activities.schedule import register_scheduled_task
 from bucker.config import settings
 from bucker.workflows.code_task_workflow import CodeTaskWorkflow
+from bucker.workflows.scheduled_task_workflow import ScheduledTaskWorkflow
 from bucker.workflows.task_workflow import TaskWorkflow
 
 logging.basicConfig(
@@ -50,7 +52,7 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=settings.task_queue,
-        workflows=[TaskWorkflow, CodeTaskWorkflow],
+        workflows=[TaskWorkflow, CodeTaskWorkflow, ScheduledTaskWorkflow],
         activities=[
             # Phase 0 durability demo
             record_task_started, run_step, record_task_completed,
@@ -58,6 +60,8 @@ async def main() -> None:
             plan_task, run_worker, run_verifier, evaluate_policy, record_decision,
             # Phase 2 adaptive planning (M3)
             choose_adaptive_strategy,
+            # Schedules (recurring tasks)
+            register_scheduled_task,
         ],
     )
     await worker.run()

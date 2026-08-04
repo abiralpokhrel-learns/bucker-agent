@@ -617,6 +617,52 @@ def test_dev_token_guard_skipped_when_real_token_set():
         object.__setattr__(settings, "api_token", original_token)
 
 
+# ------------------------------------------------------- templates / schedules --
+
+
+def test_templates_endpoint_lists_presets(client):
+    """GET /templates is pure — no DB, no Temporal."""
+    resp = client.get("/templates")
+    assert resp.status_code == 200
+    ids = [t["id"] for t in resp.json()["templates"]]
+    assert "code-fix" in ids and "research" in ids
+
+
+def test_new_task_page_renders_template_cards(client):
+    resp = client.get("/tasks/new")
+    assert resp.status_code == 200
+    assert "Start from a template" in resp.text
+    assert "applyTemplate" in resp.text
+
+
+def test_schedules_list_503_when_temporal_down(client):
+    """Schedules live in Temporal; without it the API says so clearly."""
+    resp = client.get("/schedules")
+    assert resp.status_code == 503
+    assert "Temporal unreachable" in resp.json()["detail"]
+
+
+def test_schedules_create_rejects_unknown_template(client):
+    resp = client.post(
+        "/schedules",
+        params={
+            "schedule_id": "nightly",
+            "cron": "0 9 * * *",
+            "template": "does-not-exist",
+        },
+    )
+    assert resp.status_code == 400
+    assert "unknown template" in resp.json()["detail"]
+
+
+def test_schedules_page_renders_without_temporal(client):
+    """The page degrades gracefully — an alert, not a 500."""
+    resp = client.get("/schedules-page")
+    assert resp.status_code == 200
+    assert "Temporal is not reachable" in resp.text
+    assert "Create a schedule" in resp.text
+
+
 # ------------------------------------------------------- degraded mode -----
 
 

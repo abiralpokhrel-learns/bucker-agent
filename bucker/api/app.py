@@ -34,7 +34,7 @@ import contextlib
 import os
 import sys
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -56,8 +56,6 @@ from bucker.core.eventstore import EventStore, create_pool
 from bucker.core.snapshots import SnapshotStore
 from bucker.replay.engine import ReplayError, ReplayResult, replay_task
 from bucker.router.client import RecordingStore
-from bucker.workflows.code_task_workflow import CodeTaskInput, CodeTaskWorkflow
-from bucker.workflows.task_workflow import TaskWorkflow, TaskWorkflowInput
 
 # ------------------------------------------------------------------- globals --
 
@@ -234,75 +232,26 @@ async def _spawn_task(
 ) -> tuple[str, str | None]:
     """Insert the task row, append TaskCreated, start the workflow.
 
-    Returns (task_id, workflow_id). Shared by POST /tasks and the rerun
-    endpoint so a re-run is literally the same code path as a new task.
+    Delegates to the shared core path (bucker.core.tasks) so the HTTP API,
+    CLI, MCP server and scheduler all create tasks identically — one code
+    path, one audit trail. Returns (task_id, workflow_id).
     """
-    task_id = uuid4()
-    store = _get_store()
+    from bucker.core.tasks import create_task
 
-    # The planner chooses the verifier for the real pipeline; demo tasks
-    # default to noop.
-    verifier = (verifier or "noop") if task_type in _DEMO_TASK_TYPES else None
-
-    async with _get_pool().acquire() as conn:
-        await conn.execute(
-            "INSERT INTO tasks (id, task_type, objective, status, verifier, budget_usd) "
-            "VALUES ($1, $2, $3, 'pending', $4, $5)",
-            task_id, task_type, objective, verifier, budget_usd,
-        )
-
-    payload = {
-        "objective": objective,
-        "task_type": task_type,
-        "budget_usd": budget_usd,
-    }
-    if verifier:
-        payload["verifier"] = verifier
-    await store.append(
-        task_id,
-        "TaskCreated",
-        payload,
-        idempotency_key=f"{task_id}:created",
+    return await create_task(
+        _get_store(),
+        _get_pool(),
+        objective=objective,
+        task_type=task_type,
+        verifier=verifier,
+        budget_usd=budget_usd,
+        deadline_minutes=deadline_minutes,
+        max_retries=max_retries,
+        adaptive=adaptive,
     )
 
-    # Start a Temporal workflow if Temporal is available; otherwise the
-    # task sits pending and a worker picks it up.
-    workflow_id = None
-    try:
-        from temporalio.client import Client
-        client = await Client.connect(
-            settings.temporal_host, namespace=settings.temporal_namespace
-        )
-        if task_type in _DEMO_TASK_TYPES:
-            handle = await client.start_workflow(
-                TaskWorkflow.run,
-                TaskWorkflowInput(
-                    task_id=str(task_id),
-                    objective=objective,
-                    task_type=task_type,
-                ),
-                id=f"task-{task_id}",
-                task_queue=settings.task_queue,
-            )
-        else:
-            handle = await client.start_workflow(
-                CodeTaskWorkflow.run,
-                CodeTaskInput(
-                    task_id=str(task_id),
-                    objective=objective,
-                    max_retries=max_retries,
-                    budget_usd=budget_usd,
-                    deadline_minutes=deadline_minutes,
-                    adaptive=adaptive,
-                ),
-                id=f"task-{task_id}",
-                task_queue=settings.task_queue,
-            )
-        workflow_id = handle.id
-    except Exception:
-        workflow_id = None
 
-    return str(task_id), workflow_id
+# ------------------------------------------------------------ POST /tasks ---
 
 
 @app.post("/tasks")
@@ -413,7 +362,9 @@ async def new_task_page(
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> str:
     _check_auth(creds)
-    return render_new_task_page()
+    from bucker.templates import list_templates
+
+    return render_new_task_page(templates=list_templates())
 
 
 @app.get("/tasks/{task_id}")
@@ -736,6 +687,124 @@ async def _system_status() -> dict:
         status["platform"]["tasks"] = None
 
     return status
+
+
+# --------------------------------------------------------------- templates --
+
+
+@app.get("/templates")
+async def list_templates(
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Task templates: named presets for the new-task form and schedules."""
+    _check_auth(creds)
+    from bucker.templates import list_templates as _list
+
+    return {"templates": _list()}
+
+
+# -------------------------------------------------------------- schedules --
+
+
+@app.post("/schedules")
+async def create_schedule_endpoint(
+    schedule_id: str = Query(..., min_length=3, max_length=64,
+                             description="Stable identifier, e.g. 'nightly-bench'"),
+    cron: str = Query(..., min_length=5, description="5-field cron, e.g. '0 9 * * 1-5'"),
+    template: str = Query(..., description="Task template id"),
+    objective: str = Query("", max_length=2000,
+                           description="Override the template's objective"),
+    budget_usd: float | None = Query(None, ge=0),
+    deadline_minutes: int | None = Query(None, ge=1),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Create (or update) a recurring verified task on a cron schedule."""
+    _check_auth(creds)
+    from bucker.core.schedules import ScheduleSpec, create_schedule
+    from bucker.templates import UnknownTemplateError
+
+    try:
+        return await create_schedule(ScheduleSpec(
+            schedule_id=schedule_id,
+            cron=cron,
+            template=template,
+            objective=objective,
+            budget_usd=budget_usd,
+            deadline_minutes=deadline_minutes,
+        ))
+    except UnknownTemplateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — Temporal errors are user-facing here
+        raise HTTPException(
+            status_code=409,
+            detail=f"could not create schedule: {type(exc).__name__}: {str(exc)[:160]}",
+        ) from exc
+
+
+@app.get("/schedules")
+async def list_schedules_endpoint(
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """All schedules (from Temporal — the durable source of truth)."""
+    _check_auth(creds)
+    from bucker.core.schedules import list_schedules
+
+    try:
+        schedules = await list_schedules()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"Temporal unreachable: {type(exc).__name__}: {str(exc)[:120]}",
+        ) from exc
+    return {"schedules": schedules}
+
+
+@app.delete("/schedules/{schedule_id}")
+async def delete_schedule_endpoint(
+    schedule_id: str,
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Delete a schedule. 404 when it did not exist."""
+    _check_auth(creds)
+    from bucker.core.schedules import delete_schedule
+
+    try:
+        deleted = await delete_schedule(schedule_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"Temporal unreachable: {type(exc).__name__}: {str(exc)[:120]}",
+        ) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return {"schedule_id": schedule_id, "deleted": True}
+
+
+# -------------------------------------------------------------- schedules page --
+
+
+@app.get("/schedules-page", response_class=HTMLResponse)
+async def schedules_page(
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> str:
+    """HTML page for managing schedules (rendered by the dashboard)."""
+    _check_auth(creds)
+    from bucker.core.schedules import list_schedules
+    from bucker.templates import list_templates
+
+    try:
+        schedules = await list_schedules()
+        temporal_ok = True
+    except Exception:  # noqa: BLE001
+        schedules, temporal_ok = [], False
+
+    from bucker.api.dashboard import render_schedules_page
+
+    return render_schedules_page(
+        schedules,
+        templates=list_templates(),
+        temporal_ok=temporal_ok,
+    )
 
 
 @app.get("/api/system")
