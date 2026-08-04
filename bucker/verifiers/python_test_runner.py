@@ -163,6 +163,21 @@ class NoopVerifier:
 
 
 def register_builtins() -> None:
-    """Register the verifiers that ship with the platform."""
+    """Register the verifiers that ship with the platform.
+
+    Idempotent: safe to call multiple times (subsequent calls are no-ops).
+    """
+    global _BUILTINS_REGISTERED
+    if _BUILTINS_REGISTERED:
+        return
     register(PythonTestRunner())
     register(NoopVerifier())
+    # The second domain (BUILD_PLAN step 35): citation-consistency for
+    # "research" tasks. Imported here, not at module scope, so importing this
+    # module never drags in the citation checker (and vice versa).
+    from bucker.verifiers.citation_checker import CitationVerifier
+    register(CitationVerifier())
+    _BUILTINS_REGISTERED = True
+
+
+_BUILTINS_REGISTERED = False

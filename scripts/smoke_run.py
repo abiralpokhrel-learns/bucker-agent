@@ -278,8 +278,8 @@ async def preflight(live: bool) -> list[str]:
             else:
                 if probe.returncode != 0:
                     problems.append(
-                        f"Local Ollama model {local_model!r} is not available. Download it with:\n"
-                        f"      ollama pull {local_model}"
+                        f"Local Ollama model {local_model!r} is not available. "
+                        f"Download it with:\n      ollama pull {local_model}"
                     )
 
         key_vars = (
@@ -316,8 +316,19 @@ async def preflight(live: bool) -> list[str]:
 def seed_workspace(task_id: str) -> Path:
     workspace = Path(settings.blob_root).parent / "workspace" / task_id
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "calc.py").write_text(CALC_PY, encoding="utf-8")
-    (workspace / "test_calc.py").write_text(TEST_CALC_PY, encoding="utf-8")
+
+    # Write LF, never CRLF: the sandbox is a Linux container, and Windows
+    # text-mode writes (Path.write_text with default newline=None) translate
+    # \n -> \r\n, which breaks git apply, pytest, and every tool in the
+    # image. sandbox.write_file has the same guard (newline="") — this is
+    # the host-side equivalent. Found the hard way: a CRLF workspace makes
+    # every LF-context diff fail to apply.
+    def _write(name: str, content: str) -> None:
+        with open(workspace / name, "w", encoding="utf-8", newline="") as f:
+            f.write(content)
+
+    _write("calc.py", CALC_PY)
+    _write("test_calc.py", TEST_CALC_PY)
     return workspace
 
 
@@ -497,7 +508,7 @@ async def main(live: bool, keep: bool) -> int:
             say("  the planner. Read them before assuming the plumbing is broken.")
 
         if not keep:
-            say(f"\n  workspace kept at: {workspace}")
+            say(f"\n  workspace: {workspace}")
 
         return 0 if verdict.passed else 1
     finally:

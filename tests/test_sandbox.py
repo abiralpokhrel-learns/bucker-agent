@@ -20,6 +20,8 @@ from bucker.sandbox.runtime import (
     SandboxError,
     build_run_args,
     docker_available,
+    ensure_diff_headers,
+    repair_diff_prefixes,
 )
 
 
@@ -124,6 +126,22 @@ def test_read_rejects_path_traversal(workspace):
         sandbox.read_file("../../etc/passwd")
 
 
+def test_sibling_directory_prefix_is_not_inside_the_workspace(tmp_path):
+    """The classic startswith failure: 'workspace2/x' starts with 'workspace'.
+
+    is_relative_to must reject it even though the string prefix matches.
+    """
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    sibling = tmp_path / "workspace2"
+    sibling.mkdir()
+
+    sandbox = DockerSandbox(ws)
+    with pytest.raises(SandboxError, match="escapes workspace"):
+        sandbox.write_file("../workspace2/evil.txt", "malicious")
+    assert not (sibling / "evil.txt").exists()  # nothing written outside
+
+
 def test_legitimate_nested_write_works(workspace):
     sandbox = DockerSandbox(workspace)
     sandbox.write_file("src/module/file.py", "print('ok')\n")
@@ -144,6 +162,86 @@ def test_exec_before_start_is_an_error(workspace):
 def test_container_names_are_unique(workspace):
     a, b = DockerSandbox(workspace), DockerSandbox(workspace)
     assert a.container_name != b.container_name
+
+
+# ------------------------------------------------- diff header inference ---
+# Small models sometimes emit a bare hunk with no ---/+++ file headers.
+# Neither git apply nor patch can guess the target file; the worker's
+# files_touched names it, so the headers are prepended.
+
+
+def test_bare_hunk_gets_headers_from_files_touched():
+    diff = "@@ -1,3 +1,6 @@\n def add(a, b):\n     return a + b\n+def sub(a, b):\n"
+    fixed = ensure_diff_headers(diff, ["calc.py"])
+    assert fixed.startswith("--- a/calc.py\n+++ b/calc.py\n@@ -1,3")
+    assert diff in fixed  # content preserved
+
+
+def test_existing_headers_are_left_alone():
+    diff = "--- a/calc.py\n+++ b/calc.py\n@@ -1,3 +1,6 @@\n"
+    assert ensure_diff_headers(diff, ["calc.py"]) == diff
+
+
+def test_diff_git_format_is_left_alone():
+    diff = "diff --git a/calc.py b/calc.py\n--- a/calc.py\n+++ b/calc.py\n"
+    assert ensure_diff_headers(diff, ["calc.py"]) == diff
+
+
+def test_ambiguous_cases_are_never_guessed():
+    hunk = "@@ -1,3 +1,6 @@\n def add(a, b):\n"
+    # No files at all.
+    assert ensure_diff_headers(hunk, None) == hunk
+    # Multiple files — cannot know which one the bare hunk targets.
+    assert ensure_diff_headers(hunk, ["a.py", "b.py"]) == hunk
+
+
+def test_leading_blank_lines_are_stripped_before_headers():
+    diff = "\n\n@@ -1,3 +1,6 @@\n def add(a, b):\n"
+    fixed = ensure_diff_headers(diff, ["calc.py"])
+    assert fixed.startswith("--- a/calc.py\n+++ b/calc.py\n@@")
+    assert "\n\n@@ " not in fixed
+
+
+# ------------------------------------------------- diff prefix repair ------
+# Small models occasionally drop the "+" on an added line inside a hunk,
+# which makes git apply call the patch corrupt.
+
+
+def test_missing_plus_prefix_is_restored():
+    diff = (
+        "@@ -1,3 +1,6 @@\n def add(a, b):\n     return a + b\n+\n"
+        "def sub(a, b):\n+    return a - b\n"
+    )
+    fixed = repair_diff_prefixes(diff)
+    assert "+def sub(a, b):" in fixed
+    added_lines = [line for line in fixed.split("\n") if line.startswith("+")]
+    assert len(added_lines) == 3  # blank add, def line, return line
+
+
+def test_valid_hunk_is_untouched():
+    diff = "@@ -1,3 +1,6 @@\n def add(a, b):\n+def sub(a, b):\n"
+    assert repair_diff_prefixes(diff) == diff
+
+
+def test_headers_and_separators_are_untouched():
+    diff = (
+        "--- a/calc.py\n+++ b/calc.py\n@@ -1,3 +1,6 @@\n"
+        " def add(a, b):\n+def sub(a, b):\n\n"
+        "--- a/other.py\n+++ b/other.py\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+    )
+    fixed = repair_diff_prefixes(diff)
+    assert fixed.startswith("--- a/calc.py")
+    hunk_lines = [line for line in fixed.split("\n") if line.startswith("@@")]
+    assert len(hunk_lines) == 2  # both hunks intact
+    assert "-x\n+y\n" in fixed
+
+
+def test_no_newline_marker_is_untouched():
+    diff = "@@ -1,2 +1,2 @@\n def a():\n-    x\n+    y\n\\ No newline at end of file\n"
+    fixed = repair_diff_prefixes(diff)
+    assert "\\ No newline" in fixed
+    added_lines = [line for line in fixed.split("\n") if line.startswith("+")]
+    assert len(added_lines) == 1  # only the genuine addition
 
 
 # ---------------------------------------------------------- integration -----

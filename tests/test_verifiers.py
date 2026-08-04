@@ -96,13 +96,14 @@ def test_registering_same_object_twice_is_fine():
 
 def test_builtins_register():
     register_builtins()
-    assert set(available()) == {"python_test_runner", "noop"}
+    assert set(available()) == {"python_test_runner", "noop", "citation_checker"}
 
 
 def test_routing_by_task_type():
     register_builtins()
     assert for_task_type("code_change") == ("python_test_runner",)
     assert for_task_type("demo") == ("noop",)
+    assert for_task_type("research") == ("citation_checker",)
 
 
 def test_noop_is_not_available_for_code():
@@ -240,6 +241,124 @@ async def test_noop_passes_but_says_so():
 def test_result_summary_is_readable():
     r = VerificationResult(passed=False, verifier="x", diagnostics="boom")
     assert "FAILED" in r.summary()
+
+
+# ------------------------------------------------------- citation checker --
+# Step 35's second domain: citations must come from known sources, not the
+# model's imagination. These tests use a file-backed fake sandbox because
+# the citation verifier reads workspace files rather than running commands.
+
+from bucker.verifiers.citation_checker import (  # noqa: E402
+    CitationVerifier,
+    check_against_sources,
+    extract_citations,
+    extract_dois,
+)
+
+
+class FakeFileSandbox:
+    """Returns scripted file contents. No Docker, no model."""
+
+    def __init__(self, files: dict[str, str]) -> None:
+        self._files = files
+
+    def read_file(self, relative_path: str) -> str:
+        if relative_path not in self._files:
+            raise FileNotFoundError(relative_path)
+        return self._files[relative_path]
+
+
+RESEARCH_TASK = Task(
+    schema_version=1,
+    task_type="research",
+    objective="Write a literature review citing only provided sources",
+    verifier="citation_checker",
+)
+
+
+def test_extract_citations_bracketed_and_parenthetical():
+    text = "As shown in [Smith 2020] and (Jones et al., 2019), DOIs resolve."
+    assert extract_citations(text) == ["Smith 2020", "Jones et al., 2019"]
+
+
+def test_extract_citations_ignores_plain_text():
+    assert extract_citations("No citations here, just prose.") == []
+
+
+def test_extract_dois():
+    text = "See doi:10.1038/s41586-020-2649-2 for details."
+    assert extract_dois(text) == ["10.1038/s41586-020-2649-2"]
+
+
+def test_check_against_sources_split():
+    check = check_against_sources(
+        ["Smith 2020", "Madeup 1999"], ["Smith 2020", "Jones et al., 2019"]
+    )
+    assert check["valid_citations"] == ["Smith 2020"]
+    assert check["unknown_citations"] == ["Madeup 1999"]
+    assert check["unknown_count"] == 1
+
+
+async def test_citation_verifier_passes_when_all_known():
+    sandbox = FakeFileSandbox({
+        "report.md": "Prior work [Smith 2020] showed the effect.",
+        "sources.txt": "Smith 2020\nJones et al., 2019\n",
+    })
+    result = WorkerResult(
+        schema_version=1, status="produced", summary="review",
+        files_touched=["report.md"],
+    )
+    verdict = await CitationVerifier().verify(RESEARCH_TASK, result, sandbox)
+    assert verdict.passed is True
+    assert "1 citations match" in verdict.diagnostics
+
+
+async def test_citation_verifier_fails_on_unknown_source():
+    sandbox = FakeFileSandbox({
+        "report.md": "Claims from [Fabricated 2021] are false.",
+        "sources.txt": "Smith 2020\n",
+    })
+    result = WorkerResult(
+        schema_version=1, status="produced", summary="review",
+        files_touched=["report.md"],
+    )
+    verdict = await CitationVerifier().verify(RESEARCH_TASK, result, sandbox)
+    assert verdict.passed is False
+    assert "Fabricated 2021" in verdict.diagnostics
+
+
+async def test_citation_verifier_passes_with_no_citations():
+    """No citations is vacuously consistent — flagged as such, not failed."""
+    sandbox = FakeFileSandbox({"report.md": "A paragraph of prose."})
+    result = WorkerResult(
+        schema_version=1, status="produced", summary="review",
+        files_touched=["report.md"],
+    )
+    verdict = await CitationVerifier().verify(RESEARCH_TASK, result, sandbox)
+    assert verdict.passed is True
+    assert "no citations found" in verdict.diagnostics
+
+
+async def test_citation_verifier_blocked_worker_fails():
+    sandbox = FakeFileSandbox({})
+    blocked = WorkerResult(
+        schema_version=1, status="blocked", summary="stuck",
+        blocked_reason="no sources file",
+    )
+    verdict = await CitationVerifier().verify(RESEARCH_TASK, blocked, sandbox)
+    assert verdict.passed is False
+    assert "blocked" in verdict.diagnostics
+
+
+async def test_citation_verifier_missing_file_is_not_a_crash():
+    """A missing report file is tolerated; the verdict still comes out."""
+    sandbox = FakeFileSandbox({"sources.txt": "Smith 2020\n"})
+    result = WorkerResult(
+        schema_version=1, status="produced", summary="review",
+        files_touched=["missing.md"],
+    )
+    verdict = await CitationVerifier().verify(RESEARCH_TASK, result, sandbox)
+    assert verdict.passed is True  # nothing to check, nothing wrong
 
 
 # ------------------------------------------------------- the cardinal rule --

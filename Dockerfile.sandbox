@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir \
 
 # git is needed for `git apply` when the worker returns a unified diff.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends git patch \
     && rm -rf /var/lib/apt/lists/*
 
 # Matches the --user 1000:1000 the sandbox runs with, so the workspace mount is

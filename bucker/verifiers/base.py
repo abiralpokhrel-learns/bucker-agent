@@ -112,3 +112,6 @@ def for_task_type(task_type: str) -> tuple[str, ...]:
 def clear() -> None:
     """Test helper. Never call this from application code."""
     _REGISTRY.clear()
+    # Reset the builtins-registered flag so register_builtins() works again.
+    import bucker.verifiers.python_test_runner as ptr
+    ptr._BUILTINS_REGISTERED = False

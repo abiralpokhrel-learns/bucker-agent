@@ -160,7 +160,11 @@ async def execute_task(
             if apply and result.produced_work:
                 # Applying can fail — a malformed diff is a real outcome the
                 # verifier should see, not something to hide or retry blindly.
-                applied = await sandbox.apply_diff(result.diff or "")
+                # files_touched hints the target file when the model forgot
+                # the ---/+++ headers (ensure_diff_headers in the sandbox).
+                applied = await sandbox.apply_diff(
+                    result.diff or "", files=result.files_touched
+                )
             return WorkOutcome(result=result, attempts=attempts, applied=applied)
 
         if attempt_no < max_attempts:

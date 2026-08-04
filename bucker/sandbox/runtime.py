@@ -125,6 +125,53 @@ def build_run_args(
     return args
 
 
+def ensure_diff_headers(diff: str, files: list[str] | None) -> str:
+    """Prepend ``---``/``+++`` file headers when the model omitted them.
+
+    Small models sometimes emit a bare hunk with no file headers at all.
+    Neither ``git apply`` nor ``patch`` can guess the target file. The
+    worker's ``files_touched`` names it unambiguously for a single-file
+    diff, so when headers are missing and exactly one file is known, they
+    are prepended. Anything ambiguous is left unchanged — the verifier,
+    not the repair, is the judge of correctness.
+    """
+    if not files or len(files) != 1:
+        return diff
+    stripped = diff.lstrip("\n")
+    first = stripped.split("\n", 1)[0].strip()
+    if first.startswith(("---", "+++", "diff ", "Index:")):
+        return diff
+    return f"--- a/{files[0]}\n+++ b/{files[0]}\n{stripped}"
+
+
+def repair_diff_prefixes(diff: str) -> str:
+    """Restore the ``+`` prefix on hunk lines that lost it.
+
+    Small models occasionally emit an added line without its ``+`` prefix —
+    typically the line right after a blank addition. git apply rejects
+    unprefixed hunk lines as corrupt. Inside a hunk, any line with no
+    ``+``/``-``/space prefix is treated as an addition. If the repair is
+    wrong, the hunk fails to apply and the verifier catches it — the
+    verifier, not this function, decides correctness.
+    """
+    out: list[str] = []
+    in_hunk = False
+    for line in diff.split("\n"):
+        if line.startswith("@@"):
+            in_hunk = True
+            out.append(line)
+            continue
+        if in_hunk and line == "":
+            in_hunk = False  # blank separator between hunks
+            out.append(line)
+            continue
+        if in_hunk and not line.startswith((" ", "+", "-", "\\")):
+            out.append("+" + line)
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 class DockerSandbox:
     """One container per task. Created, used, destroyed."""
 
@@ -209,28 +256,64 @@ class DockerSandbox:
 
         Path traversal is rejected: a model-authored path must not be able to
         escape the workspace and write to the host filesystem.
+
+        Normalises CRLF to LF: the sandbox is a Linux container, and Windows
+        line endings break git apply, pytest, and every tool in the image.
         """
         target = (self.workspace / relative_path).resolve()
         root = self.workspace.resolve()
-        if not str(target).startswith(str(root)):
+        # is_relative_to, NOT str.startswith: the string form would accept
+        # a sibling like "workspace2/file" as inside "workspace". It is also
+        # case-insensitive on Windows, unlike a raw prefix comparison.
+        if not target.is_relative_to(root):
             raise SandboxError(f"path escapes workspace: {relative_path!r}")
 
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        # open(..., newline='') disables universal-newline translation.
+        # Without it, Path.write_text converts \n to \r\n on Windows,
+        # which breaks every tool in the Linux sandbox (git, python, pytest).
+        with open(target, "w", encoding="utf-8", newline="") as f:
+            f.write(content.replace("\r\n", "\n"))
         return target
 
     def read_file(self, relative_path: str) -> str:
         target = (self.workspace / relative_path).resolve()
         root = self.workspace.resolve()
-        if not str(target).startswith(str(root)):
+        if not target.is_relative_to(root):
             raise SandboxError(f"path escapes workspace: {relative_path!r}")
         return target.read_text(encoding="utf-8")
 
-    async def apply_diff(self, diff: str) -> ExecResult:
-        """Apply a unified diff inside the sandbox, never on the host."""
-        self.write_file(".bucker.patch", diff)
-        return await self.exec("git apply --verbose .bucker.patch 2>&1 || "
-                               "patch -p1 --forward < .bucker.patch")
+    async def apply_diff(
+        self, diff: str, *, files: list[str] | None = None
+    ) -> ExecResult:
+        """Apply a unified diff inside the sandbox, never on the host.
+
+        Normalises CRLF -> LF: Docker volumes on Windows hosts can inject
+        carriage returns that break git apply.
+
+        Tolerance switches, all for the same reason — small models write
+        sloppy-but-fixable diffs, and the verifier, not the applier, is the
+        judge of whether the result is correct:
+
+          * ``ensure_diff_headers``: bare hunks get ``---``/``+++`` headers
+            prepended from the worker's ``files_touched``.
+          * ``repair_diff_prefixes``: hunk lines that lost their ``+``
+            prefix are restored.
+          * ``git apply --recount``: hunk headers often carry wrong line
+            counts (e.g. ``@@ -1,5 +1,6 @@`` for a 3-line file). git infers
+            the counts from the hunk content instead of trusting them.
+          * the ``patch`` fallback chain tries ``-p1`` (for ``a/``-prefixed
+            paths) then ``-p0`` (for the bare filenames small models emit).
+            ``patch`` is also far more tolerant of fuzzy context than
+            ``git apply``, which rejects hunks whose context drifted.
+        """
+        diff = repair_diff_prefixes(ensure_diff_headers(diff, files))
+        self.write_file(".bucker.patch", diff.replace("\r\n", "\n"))
+        return await self.exec(
+            "git apply --recount --verbose .bucker.patch 2>&1 || "
+            "patch -p1 --forward < .bucker.patch || "
+            "patch -p0 --forward < .bucker.patch"
+        )
 
 
 # ------------------------------------------------------------- subprocess ----

@@ -18,6 +18,7 @@ from bucker.activities.demo import (
     run_step,
 )
 from bucker.activities.pipeline import (
+    choose_adaptive_strategy,
     evaluate_policy,
     record_decision,
     run_verifier,
@@ -55,6 +56,8 @@ async def main() -> None:
             record_task_started, run_step, record_task_completed,
             # Phase 1 pipeline
             plan_task, run_worker, run_verifier, evaluate_policy, record_decision,
+            # Phase 2 adaptive planning (M3)
+            choose_adaptive_strategy,
         ],
     )
     await worker.run()
