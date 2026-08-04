@@ -20,6 +20,7 @@ from bucker.activities.demo import get_blobs, get_store
 from bucker.config import settings
 from bucker.contracts.models import Task, WorkerResult
 from bucker.core.events import EventType
+from bucker.core.telemetry import record_model_call, record_tool_call, record_verification
 from bucker.retry import Action, AttemptState, decide
 from bucker.router.client import ModelRouter
 from bucker.sandbox.runtime import DockerSandbox
@@ -37,12 +38,17 @@ def workspace_for(task_id: str) -> Path:
 
 # ----------------------------------------------------------------- worker ---
 @activity.defn
-async def run_worker(task_id: str, task_dict: dict, attempt: int) -> dict:
-    """Execute one attempt at the task. The result is NOT trusted here."""
+async def run_worker(task_id: str, task_dict: dict, attempt: int,
+                     model: str | None = None) -> dict:
+    """Execute one attempt at the task. The result is NOT trusted here.
+
+    ``model`` lets adaptive planning (step 34) switch models between attempts;
+    None means the configured default (settings.model).
+    """
     store = await get_store()
     tid = UUID(task_id)
     task = Task(**task_dict)
-    router = ModelRouter(get_blobs())
+    router = ModelRouter(get_blobs(), model=model)
 
     sandbox = DockerSandbox(workspace_for(task_id))
     await sandbox.start()
@@ -61,7 +67,7 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int) -> dict:
             raise
 
         for i, att in enumerate(outcome.attempts):
-            await store.append(
+            event = await store.append(
                 tid,
                 EventType.MODEL_CALL_COMPLETED,
                 {
@@ -70,13 +76,25 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int) -> dict:
                     "cost_usd": att.response.cost_usd,
                     "latency_ms": att.response.latency_ms,
                     "from_recording": att.response.from_recording,
+                    "usage": att.response.usage,
                 },
                 tool_output_ref=att.response.raw_ref,
                 idempotency_key=f"{task_id}:work-{attempt}-call-{i + 1}",
             )
+            async with store._pool.acquire() as conn:
+                await record_model_call(
+                    conn,
+                    event_id=event.id,
+                    task_id=tid,
+                    model=att.response.model,
+                    latency_ms=att.response.latency_ms,
+                    cost_usd=att.response.cost_usd,
+                    purpose="worker",
+                    usage=att.response.usage,
+                )
 
         if outcome.applied is not None:
-            await store.append(
+            tool_event = await store.append(
                 tid,
                 EventType.TOOL_CALL_COMPLETED,
                 {
@@ -90,6 +108,14 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int) -> dict:
                 }),
                 idempotency_key=f"{task_id}:work-{attempt}-apply",
             )
+            async with store._pool.acquire() as conn:
+                await record_tool_call(
+                    conn,
+                    event_id=tool_event.id,
+                    task_id=tid,
+                    tool="apply_diff",
+                    latency_ms=outcome.applied.duration_ms,
+                )
 
         result_ref = get_blobs().put_json(outcome.result.model_dump())
         await store.append(
@@ -104,7 +130,10 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int) -> dict:
             tool_output_ref=result_ref,
             idempotency_key=f"{task_id}:work-{attempt}-completed",
         )
-        return outcome.result.model_dump()
+        # (result_dict, cost_usd): the cost rides along in-band so the
+        # workflow can enforce the budget — the WorkerResult dict itself must
+        # stay byte-pure (the verifier reconstructs it with extra="forbid").
+        return outcome.result.model_dump(), outcome.cost_usd
     finally:
         await sandbox.stop()
 
@@ -135,7 +164,7 @@ async def run_verifier(task_id: str, task_dict: dict, result_dict: dict,
     finally:
         await sandbox.stop()
 
-    await store.append(
+    verdict_event = await store.append(
         tid,
         EventType.VERIFICATION_PASSED if verdict.passed else EventType.VERIFICATION_FAILED,
         {
@@ -147,6 +176,14 @@ async def run_verifier(task_id: str, task_dict: dict, result_dict: dict,
         tool_output_ref=get_blobs().put(verdict.diagnostics),
         idempotency_key=f"{task_id}:verify-{attempt}-{'pass' if verdict.passed else 'fail'}",
     )
+    async with store._pool.acquire() as conn:
+        await record_verification(
+            conn,
+            event_id=verdict_event.id,
+            task_id=tid,
+            passed=verdict.passed,
+            duration_ms=verdict.duration_ms,
+        )
 
     return {
         "passed": verdict.passed,
@@ -196,3 +233,62 @@ async def evaluate_policy(state_dict: dict) -> dict:
         "reason": decision.reason,
         "failure_context": decision.failure_context,
     }
+
+
+# ------------------------------------------------------------ adaptive (M3) --
+
+
+@activity.defn
+async def choose_adaptive_strategy(history_dict: dict) -> dict:
+    """Pick the next-attempt strategy from the failure pattern (step 34).
+
+    Wraps the pure logic in ``bucker.adaptive`` so the decision is a recorded,
+    replayable step like every other policy decision. Returns:
+
+        strategy      one of default / chunk / clarify / switch_model
+        next_objective  the objective text for the next attempt
+        next_model      model override for the next attempt (switch_model only)
+
+    ``models_used`` entries may be "" meaning "the configured default model",
+    which is resolved here (activities may read settings; workflow code may not).
+    """
+    from bucker.adaptive import (
+        AttemptHistory,
+        Strategy,
+        choose_strategy,
+        chunk_objective,
+        clarify_objective,
+        next_model,
+    )
+
+    current = history_dict.get("current_model") or settings.model
+    history = AttemptHistory(
+        attempt=int(history_dict.get("attempt", 1)),
+        verifier_name=history_dict.get("verifier_name", ""),
+        diagnostics=[str(d) for d in history_dict.get("diagnostics", [])],
+        passed=[bool(p) for p in history_dict.get("passed", [])],
+        models_used=[
+            (m if m else current) for m in history_dict.get("models_used", [])
+        ] or [current],
+    )
+
+    strategy = choose_strategy(history)
+    objective = history_dict.get("objective", "")
+
+    result: dict = {"strategy": str(strategy)}
+
+    if strategy is Strategy.DEFAULT:
+        # Fixed-retry behaviour: carry the verifier's diagnostics forward.
+        failure_context = history_dict.get("failure_context", "")
+        result["next_objective"] = (
+            f"{objective}\n\n{failure_context}".strip() if failure_context else objective
+        )
+    elif strategy is Strategy.CHUNK:
+        result["next_objective"] = chunk_objective(objective, history.diagnostics)
+    elif strategy is Strategy.CLARIFY:
+        result["next_objective"] = clarify_objective(objective, history.diagnostics)
+    elif strategy is Strategy.SWITCH_MODEL:
+        result["next_model"] = next_model(current, history.models_used)
+        result["next_objective"] = objective
+
+    return result

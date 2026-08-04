@@ -81,6 +81,18 @@ class Settings:
     # --- model router (step 14) -----------------------------------------
     #: Never hardcode a model name anywhere else in the codebase.
     model: str = field(default_factory=lambda: _env("BUCKER_MODEL", "gpt-4o-mini"))
+    #: Comma-separated fallback chain tried in order when the primary fails
+    #: (provider down, key rejected, quota exhausted). Same spirit as a
+    #: gateway's auto-fallback: a dead provider should not take down a task.
+    #: Recorded-mode replay stays keyed to the PRIMARY model, so determinism
+    #: is unaffected by the chain.
+    model_fallbacks: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            m.strip()
+            for m in _env("BUCKER_MODEL_FALLBACKS", "").split(",")
+            if m.strip()
+        )
+    )
     #: "live" hits the provider; "recorded" replays stored blobs (step 15) and
     #: is the default so tests and iteration cost nothing.
     model_mode: str = field(default_factory=lambda: _env("BUCKER_MODEL_MODE", "recorded"))

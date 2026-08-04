@@ -13,6 +13,7 @@ from temporalio import activity
 
 from bucker.activities.demo import get_blobs, get_store
 from bucker.core.events import EventType
+from bucker.core.telemetry import record_model_call
 from bucker.planner import PlanningFailed, generate_task_contract
 from bucker.router.client import ModelRouter
 
@@ -67,7 +68,7 @@ async def plan_task(task_id: str, objective: str) -> dict:
 
     final = result.attempts[-1]
     for i, attempt in enumerate(result.attempts):
-        await store.append(
+        event = await store.append(
             tid,
             EventType.MODEL_CALL_COMPLETED,
             {
@@ -76,10 +77,22 @@ async def plan_task(task_id: str, objective: str) -> dict:
                 "cost_usd": attempt.response.cost_usd,
                 "latency_ms": attempt.response.latency_ms,
                 "from_recording": attempt.response.from_recording,
+                "usage": attempt.response.usage,
             },
             tool_output_ref=attempt.response.raw_ref,
             idempotency_key=f"{task_id}:plan-call-{i + 1}",
         )
+        async with store._pool.acquire() as conn:
+            await record_model_call(
+                conn,
+                event_id=event.id,
+                task_id=tid,
+                model=attempt.response.model,
+                latency_ms=attempt.response.latency_ms,
+                cost_usd=attempt.response.cost_usd,
+                purpose="planner",
+                usage=attempt.response.usage,
+            )
 
     await store.append(
         tid,
@@ -94,4 +107,6 @@ async def plan_task(task_id: str, objective: str) -> dict:
         idempotency_key=f"{task_id}:plan-generated",
     )
 
-    return result.task.model_dump()
+    # (task_dict, cost_usd): cost rides along in-band so the workflow can
+    # enforce the budget; the contract dict stays byte-pure for the verifier.
+    return result.task.model_dump(), result.cost_usd

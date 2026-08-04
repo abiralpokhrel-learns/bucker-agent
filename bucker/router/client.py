@@ -129,9 +129,13 @@ class ModelRouter:
         model: str | None = None,
         mode: str | None = None,
         recordings: RecordingStore | None = None,
+        fallbacks: tuple[str, ...] | None = None,
     ) -> None:
         # Defaults resolve from config, never from literals in this file.
         self.model = model or settings.model
+        self.model_fallbacks = (
+            tuple(fallbacks) if fallbacks is not None else settings.model_fallbacks
+        )
         self.mode = mode or settings.model_mode
         self.blobs = blobs or BlobStore(settings.blob_root)
         self.recordings = recordings or RecordingStore(
@@ -239,53 +243,68 @@ class ModelRouter:
 
         # max_tokens is always set by complete(), never left to the provider.
         kwargs: dict[str, Any] = {
-            "model": self.model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
 
-        started = time.perf_counter()
-        try:
-            response = await litellm.acompletion(**kwargs)
-        except Exception as exc:
-            raise ModelCallFailed(f"{type(exc).__name__}: {exc}") from exc
-        latency_ms = int((time.perf_counter() - started) * 1000)
+        # The fallback chain: try the configured model, then each fallback in
+        # order. A dead provider (down, key rejected, quota exhausted) must
+        # not take down a task when a working model is configured behind it.
+        # The digest stays keyed to the PRIMARY model, so recorded-mode
+        # replay is unaffected by the chain.
+        chain = [self.model, *self.model_fallbacks]
+        errors: list[str] = []
+        for model in chain:
+            started = time.perf_counter()
+            try:
+                response = await litellm.acompletion(model=model, **kwargs)
+            except Exception as exc:  # noqa: BLE001 — surface every provider error
+                errors.append(f"{model}: {type(exc).__name__}: {exc}")
+                continue
+            latency_ms = int((time.perf_counter() - started) * 1000)
 
-        raw = response.model_dump() if hasattr(response, "model_dump") else dict(response)
-        raw_ref = self.blobs.put_json(raw)
+            raw = response.model_dump() if hasattr(response, "model_dump") else dict(response)
+            raw_ref = self.blobs.put_json(raw)
 
-        text = raw["choices"][0]["message"]["content"] or ""
-        usage = raw.get("usage") or {}
+            text = raw["choices"][0]["message"]["content"] or ""
+            usage = raw.get("usage") or {}
 
-        try:
-            cost_usd = float(litellm.completion_cost(completion_response=response) or 0.0)
-        except Exception:
-            # Never fail a task because pricing metadata was missing; a wrong
-            # cost is a telemetry problem, an exception here is an outage.
-            cost_usd = 0.0
+            try:
+                cost_usd = float(litellm.completion_cost(completion_response=response) or 0.0)
+            except Exception:
+                # Never fail a task because pricing metadata was missing; a wrong
+                # cost is a telemetry problem, an exception here is an outage.
+                cost_usd = 0.0
 
-        self.recordings.put(
-            digest,
-            {
-                "model": self.model,
-                "purpose": purpose,
-                "text": text,
-                "raw_ref": raw_ref,
-                "request_ref": request_ref,
-                "cost_usd": cost_usd,
-                "latency_ms": latency_ms,
-                "usage": usage,
-            },
-        )
+            self.recordings.put(
+                digest,
+                {
+                    "model": self.model,          # the configured primary
+                    "model_served": model,        # the one that actually answered
+                    "purpose": purpose,
+                    "text": text,
+                    "raw_ref": raw_ref,
+                    "request_ref": request_ref,
+                    "cost_usd": cost_usd,
+                    "latency_ms": latency_ms,
+                    "usage": usage,
+                },
+            )
 
-        return ModelResponse(
-            text=text,
-            model=self.model,
-            cost_usd=cost_usd,
-            latency_ms=latency_ms,
-            raw_ref=raw_ref,
-            request_ref=request_ref,
-            from_recording=False,
-            usage=usage,
+            return ModelResponse(
+                text=text,
+                model=model,
+                cost_usd=cost_usd,
+                latency_ms=latency_ms,
+                raw_ref=raw_ref,
+                request_ref=request_ref,
+                from_recording=False,
+                usage=usage,
+            )
+
+        raise ModelCallFailed(
+            "all models in the chain failed: " + "; ".join(errors)
+            if errors
+            else f"no models configured (chain is empty, primary={self.model!r})"
         )

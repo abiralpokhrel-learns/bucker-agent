@@ -3,6 +3,7 @@
     uv run python -m bucker.cli migrate
     uv run python -m bucker.cli start --objective "demo"
     uv run python -m bucker.cli start --crash-at transform
+    uv run python -m bucker.cli start --code --objective "add a subtract fn to calc.py"
     uv run python -m bucker.cli show <task_id>
     uv run python -m bucker.cli events <task_id>
 """
@@ -50,12 +51,13 @@ async def cmd_start(args: argparse.Namespace) -> int:
     try:
         async with pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO tasks (id, task_type, objective, status, verifier) "
-                "VALUES ($1, $2, $3, 'pending', $4)",
+                "INSERT INTO tasks (id, task_type, objective, status, verifier, budget_usd) "
+                "VALUES ($1, $2, $3, 'pending', $4, $5)",
                 task_id,
                 args.task_type,
                 args.objective,
                 args.verifier,
+                args.budget_usd,
             )
         await store.append(
             task_id,
@@ -64,7 +66,7 @@ async def cmd_start(args: argparse.Namespace) -> int:
                 "objective": args.objective,
                 "task_type": args.task_type,
                 "verifier": args.verifier,
-                "budget_usd": settings.default_budget_usd,
+                "budget_usd": args.budget_usd,
             },
             idempotency_key=f"{task_id}:created",
         )
@@ -74,19 +76,46 @@ async def cmd_start(args: argparse.Namespace) -> int:
     client = await Client.connect(
         settings.temporal_host, namespace=settings.temporal_namespace
     )
-    handle = await client.start_workflow(
-        TaskWorkflow.run,
-        TaskWorkflowInput(
-            task_id=str(task_id),
-            objective=args.objective,
-            task_type=args.task_type,
-            crash_at=args.crash_at,
-        ),
-        id=f"task-{task_id}",
-        task_queue=settings.task_queue,
-    )
+
+    if args.code:
+        # The real pipeline: planner -> worker -> verifier -> retry/escalate.
+        from bucker.workflows.code_task_workflow import (
+            CodeTaskInput,
+            CodeTaskWorkflow,
+        )
+
+        handle = await client.start_workflow(
+            CodeTaskWorkflow.run,
+            CodeTaskInput(
+                task_id=str(task_id),
+                objective=args.objective,
+                max_retries=args.max_retries,
+                budget_usd=args.budget_usd,
+                deadline_minutes=args.deadline_minutes,
+                adaptive=args.adaptive,
+            ),
+            id=f"task-{task_id}",
+            task_queue=settings.task_queue,
+        )
+    else:
+        handle = await client.start_workflow(
+            TaskWorkflow.run,
+            TaskWorkflowInput(
+                task_id=str(task_id),
+                objective=args.objective,
+                task_type=args.task_type,
+                crash_at=args.crash_at,
+            ),
+            id=f"task-{task_id}",
+            task_queue=settings.task_queue,
+        )
     print(f"task_id      {task_id}")
     print(f"workflow_id  {handle.id}")
+    workflow_label = (
+        "CodeTaskWorkflow (plan->work->verify)" if args.code
+        else "TaskWorkflow (demo)"
+    )
+    print(f"workflow     {workflow_label}")
     print(f"ui           http://localhost:8233/namespaces/default/workflows/{handle.id}")
 
     if args.wait:
@@ -144,8 +173,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--objective", default="demo task")
     s.add_argument("--task-type", default="demo")
     s.add_argument("--verifier", default="noop")
+    s.add_argument("--code", action="store_true",
+                   help="run the real pipeline (plan -> work -> verify -> retry/escalate) "
+                        "instead of the 5-step demo workflow")
+    s.add_argument("--budget-usd", type=float, default=None,
+                   help="hard cost ceiling (code tasks only)")
+    s.add_argument("--deadline-minutes", type=int, default=None,
+                   help="hard time ceiling (code tasks only)")
+    s.add_argument("--max-retries", type=int, default=2,
+                   help="verification retries before human review (code tasks only)")
+    s.add_argument("--adaptive", action="store_true",
+                   help="M3: vary retry strategy on repeated failure — switch model, "
+                        "chunk the objective, or ask for clarification (code tasks only)")
     s.add_argument("--crash-at", default=None,
-                   help="inject a hard crash at this step (durability test)")
+                   help="inject a hard crash at this step (demo durability test)")
     s.add_argument("--wait", action="store_true")
     s.set_defaults(func=cmd_start)
 
