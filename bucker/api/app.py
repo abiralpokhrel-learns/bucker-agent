@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_404_NOT_FOUND, HTTP_409_CONFLICT
@@ -994,6 +994,59 @@ async def skills_page(
     from bucker.memory.skills import SkillStore
 
     return render_skills_page([s.as_dict() for s in SkillStore().list()])
+
+
+# ------------------------------------------------------------------- graphs --
+
+
+@app.post("/graphs")
+async def create_graph(
+    spec: dict = Body(..., description="graph spec: name + steps with "
+                                       "depends_on/objective/budget"),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Launch a multi-step task DAG (graph engineering).
+
+    Each step is a full verified pipeline; independent steps run in
+    parallel waves (Temporal child workflows).
+    """
+    _check_auth(creds)
+    from bucker.contracts.graph import parse_spec, topological_waves, validate_graph
+
+    try:
+        parsed = parse_spec(spec)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid graph spec: {exc}") from exc
+    errors = validate_graph(parsed)
+    if errors:
+        raise HTTPException(
+            status_code=400, detail="graph is not runnable: " + "; ".join(errors)
+        )
+
+    if _degraded:
+        raise HTTPException(status_code=503, detail="database unavailable")
+
+    from bucker.core.tasks import create_task
+
+    store = _get_store()
+    task_id, workflow_id = await create_task(
+        store,
+        store._pool,
+        objective=f"graph: {parsed.name} ({len(parsed.steps)} steps)",
+        task_type="graph",
+        verifier="noop",
+        graph_spec=spec,
+    )
+    if workflow_id is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Temporal unreachable — graph registered but not scheduled",
+        )
+    return {
+        "task_id": task_id,
+        "graph": parsed.as_dict(),
+        "waves": len(topological_waves(parsed)),
+    }
 
 
 @app.get("/api/system")

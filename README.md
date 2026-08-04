@@ -247,6 +247,39 @@ deterministic re-run), `cancel_task`, `system_status`. Register it in your
 agent as a stdio MCP server; it talks to Postgres + Temporal directly, no
 HTTP server needed.
 
+## Multi-step task graphs (graph engineering)
+
+A graph is a DAG of steps — each step a full verified pipeline
+(planner → worker → critic → verifier). Independent steps run **in
+parallel** (Temporal child workflows); a step starts only after everything
+it depends on finished. The whole graph is one task, so the audit trail
+covers the run and each step replays independently.
+
+```bash
+bucker graph run examples/graph_demo.json
+# or over the API:
+curl -X POST http://localhost:8000/graphs -H "Content-Type: application/json" \
+     -d @examples/graph_demo.json
+```
+
+```json
+{
+  "name": "calc-refactor-demo",
+  "steps": [
+    {"id": "add-sub", "objective": "Add sub() to calc.py"},
+    {"id": "add-mul", "objective": "Add mul() to calc2.py"},
+    {"id": "verify-both", "objective": "Make check.py pass",
+     "depends_on": ["add-sub", "add-mul"]}
+  ]
+}
+```
+
+`add-sub` and `add-mul` run at the same time; `verify-both` waits for
+both (the join). Validation is strict and runs before anything launches:
+duplicate ids, unknown dependencies, and cycles are rejected with 400.
+Per-step budgets and retries apply; `fail_fast` stops scheduling after a
+failed step.
+
 ## Memory & skills (the harness layer)
 
 bucker keeps learning across sessions, Hermes-style, with local files you

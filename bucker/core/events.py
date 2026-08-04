@@ -43,6 +43,9 @@ class EventType(StrEnum):
     # (loop engineering, phase A). Payload: attempt, verdict, issues,
     # repaired.
     CRITIQUE_COMPLETED = "CritiqueCompleted"
+    # Graph engineering (phase B): one step of a multi-step task DAG
+    # finished. Payload: step_id, status, detail.
+    GRAPH_STEP_COMPLETED = "GraphStepCompleted"
     MODEL_CALL_FAILED = "ModelCallFailed"
     WORKER_COMPLETED = "WorkerCompleted"
 

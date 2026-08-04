@@ -724,6 +724,47 @@ def test_memory_and_skills_pages_render(client, tmp_path):
         MemoryStore.default_root = orig_root
 
 
+# --------------------------------------------------------- graphs API --
+
+
+def test_graphs_endpoint_rejects_invalid_spec(client):
+    """Validation happens before any DB/Temporal work — pure 400s."""
+    resp = client.post("/graphs", json={"name": "x", "steps": [
+        {"id": "a", "objective": "1", "depends_on": ["ghost"]},
+    ]})
+    assert resp.status_code == 400
+    assert "not runnable" in resp.json()["detail"]
+
+    resp = client.post("/graphs", json={"name": "x", "steps": [
+        {"id": "a", "objective": "1"},
+        {"id": "b", "objective": "2", "depends_on": ["a"]},
+        {"id": "a", "objective": "3"},
+    ]})
+    assert resp.status_code == 400
+
+    resp = client.post("/graphs", json={"steps": []})
+    assert resp.status_code == 400
+
+
+def test_graphs_endpoint_degraded_mode(client, monkeypatch):
+    """With the pool down, the API answers 503, not a crash."""
+    import sys
+
+    # bucker/api/__init__.py re-exports the FastAPI instance as `app`, so
+    # `import bucker.api.app as x` binds the instance — go through
+    # sys.modules to reach the real module.
+    app_mod = sys.modules["bucker.api.app"]
+    orig = app_mod._degraded
+    app_mod._degraded = True
+    try:
+        resp = client.post("/graphs", json={
+            "name": "x", "steps": [{"id": "a", "objective": "1"}],
+        })
+        assert resp.status_code == 503
+    finally:
+        app_mod._degraded = orig
+
+
 def test_new_task_page_renders_template_cards(client):
     resp = client.get("/tasks/new")
     assert resp.status_code == 200

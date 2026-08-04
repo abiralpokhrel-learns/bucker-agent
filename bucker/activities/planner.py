@@ -19,7 +19,7 @@ from bucker.router.client import ModelRouter
 
 
 @activity.defn
-async def plan_task(task_id: str, objective: str) -> dict:
+async def plan_task(task_id: str, objective: str) -> tuple[dict, float]:
     """Generate a validated Task contract and record everything that happened.
 
     Every attempt lands in the event log — the failures especially. A rising

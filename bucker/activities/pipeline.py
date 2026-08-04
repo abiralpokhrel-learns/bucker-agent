@@ -39,7 +39,7 @@ def workspace_for(task_id: str) -> Path:
 # ----------------------------------------------------------------- worker ---
 @activity.defn
 async def run_worker(task_id: str, task_dict: dict, attempt: int,
-                     model: str | None = None) -> dict:
+                     model: str | None = None) -> tuple[dict, float]:
     """Execute one attempt at the task. The result is NOT trusted here.
 
     ``model`` lets adaptive planning (step 34) switch models between attempts;

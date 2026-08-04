@@ -533,6 +533,66 @@ async def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_graph_run(args: argparse.Namespace) -> int:
+    """Validate + launch a multi-step task DAG from a spec JSON file."""
+    import json as _json
+
+    from bucker.contracts.graph import parse_spec, validate_graph
+    from bucker.core.tasks import create_task
+
+    try:
+        spec_data = _json.loads(Path(args.spec_file).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        print(f"spec file not found: {args.spec_file}", file=sys.stderr)
+        return 2
+    except _json.JSONDecodeError as exc:
+        print(f"spec file is not valid JSON: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        spec = parse_spec(spec_data)
+    except ValueError as exc:
+        print(f"invalid graph spec: {exc}", file=sys.stderr)
+        return 2
+    errors = validate_graph(spec)
+    if errors:
+        print("graph is not runnable:")
+        for e in errors:
+            print(f"  - {e}")
+        return 2
+
+    pool = await create_pool(settings.database_url)
+    try:
+        store = EventStore(pool)
+        task_id, workflow_id = await create_task(
+            store,
+            pool,
+            objective=f"graph: {spec.name} ({len(spec.steps)} steps)",
+            task_type="graph",
+            verifier="noop",
+            graph_spec=spec_data,
+        )
+    finally:
+        await pool.close()
+
+    print(f"graph launched: task {task_id}")
+    print(f"  {len(spec.steps)} steps across "
+          f"{len(topological_waves(spec))} parallel waves")
+    if workflow_id is None:
+        print("  WARNING: Temporal unreachable — task registered but not "
+              "scheduled yet")
+    else:
+        print("  watch it: /tasks/" + task_id + "/dashboard")
+    return 0
+
+
+def topological_waves(spec) -> list:
+    """Local import keeps the CLI lean when graphs are unused."""
+    from bucker.contracts.graph import topological_waves as _tw
+
+    return _tw(spec)
+
+
 # ----------------------------------------------------------------- main ----
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bucker", description="bucker-agent CLI")
@@ -660,6 +720,12 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("task_id")
     ex.add_argument("--format", default="md", choices=["md", "json", "jsonl"])
     ex.set_defaults(func=cmd_export)
+
+    gr = sub.add_parser("graph", help="run a multi-step task DAG (graph engineering)")
+    gr_sub = gr.add_subparsers(dest="graph_cmd", required=True)
+    gr_run = gr_sub.add_parser("run", help="run a graph spec from a JSON file")
+    gr_run.add_argument("spec_file", help="path to the graph spec JSON")
+    gr_run.set_defaults(func=cmd_graph_run)
 
     return p
 

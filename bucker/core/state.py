@@ -166,6 +166,22 @@ def _redaction_applied(s: State, e: Event) -> None:
                 s["artifacts"][key] = "<redacted>"
 
 
+def _critique_completed(s: State, e: Event) -> None:
+    """Informational: the self-critique verdict. Does not change task status."""
+    s["critiques"] = s.get("critiques", 0) + 1
+    if e.payload.get("verdict") == "needs_fix":
+        s["repairs"] = s.get("repairs", 0) + int(bool(e.payload.get("repaired")))
+
+
+def _graph_step_completed(s: State, e: Event) -> None:
+    """Informational: one DAG step finished. Does not change task status."""
+    steps = s.setdefault("graph_steps", [])
+    steps.append({
+        "step_id": e.payload.get("step_id"),
+        "status": e.payload.get("status"),
+    })
+
+
 HANDLERS: dict[str, Handler] = {
     EventType.TASK_CREATED: _task_created,
     EventType.TASK_STARTED: _task_started,
@@ -179,6 +195,8 @@ HANDLERS: dict[str, Handler] = {
     EventType.TOOL_CALL_COMPLETED: _tool_call_completed,
     EventType.MODEL_CALL_COMPLETED: _model_call_completed,
     EventType.MODEL_CALL_FAILED: _model_call_failed,
+    EventType.CRITIQUE_COMPLETED: _critique_completed,
+    EventType.GRAPH_STEP_COMPLETED: _graph_step_completed,
     EventType.WORKER_COMPLETED: _worker_completed,
     EventType.VERIFICATION_REQUESTED: _verification_requested,
     EventType.VERIFICATION_PASSED: _verification_passed,

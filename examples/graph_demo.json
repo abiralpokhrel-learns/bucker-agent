@@ -1,0 +1,8 @@
+{
+  "name": "calc-refactor-demo",
+  "steps": [
+    {"id": "add-sub", "objective": "Create a file calc.py containing two functions: add(a,b) returning a+b and sub(a,b) returning a-b. The file does not exist yet — create it from scratch."},
+    {"id": "add-mul", "objective": "Create a file calc2.py containing one function mul(a,b) returning a*b. The file does not exist yet — create it from scratch."},
+    {"id": "verify-both", "objective": "Create a file check.py containing a function check() that returns True. The file does not exist yet — create it from scratch.", "depends_on": ["add-sub", "add-mul"]}
+  ]
+}

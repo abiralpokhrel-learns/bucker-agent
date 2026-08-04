@@ -73,12 +73,16 @@ async def create_task(
     deadline_minutes: int | None = None,
     max_retries: int = 2,
     adaptive: bool = False,
+    graph_spec: dict | None = None,
 ) -> tuple[str, str | None]:
     """Insert the task row, append TaskCreated, start the workflow.
 
     Returns (task_id, workflow_id). workflow_id is None when Temporal is
     unavailable — the task still exists, pending, and a worker picks it up
     when Temporal returns.
+
+    task_type="graph" with graph_spec starts the multi-step DAG workflow
+    (graph engineering) instead of a single-pipeline run.
     """
     task_id = await register_task(
         store, pool,
@@ -117,19 +121,35 @@ async def create_task(
                 CodeTaskWorkflow,
             )
 
-            handle = await client.start_workflow(
-                CodeTaskWorkflow.run,
-                CodeTaskInput(
-                    task_id=str(task_id),
-                    objective=objective,
-                    max_retries=max_retries,
-                    budget_usd=budget_usd,
-                    deadline_minutes=deadline_minutes,
-                    adaptive=adaptive,
-                ),
-                id=f"task-{task_id}",
-                task_queue=settings.task_queue,
-            )
+            if task_type == "graph" and graph_spec:
+                from bucker.workflows.graph_workflow import (
+                    GraphInput,
+                    GraphWorkflow,
+                )
+
+                handle = await client.start_workflow(
+                    GraphWorkflow.run,
+                    GraphInput(
+                        graph_task_id=str(task_id),
+                        spec=graph_spec,
+                    ),
+                    id=f"task-{task_id}",
+                    task_queue=settings.task_queue,
+                )
+            else:
+                handle = await client.start_workflow(
+                    CodeTaskWorkflow.run,
+                    CodeTaskInput(
+                        task_id=str(task_id),
+                        objective=objective,
+                        max_retries=max_retries,
+                        budget_usd=budget_usd,
+                        deadline_minutes=deadline_minutes,
+                        adaptive=adaptive,
+                    ),
+                    id=f"task-{task_id}",
+                    task_queue=settings.task_queue,
+                )
         workflow_id = handle.id
     except Exception:
         workflow_id = None

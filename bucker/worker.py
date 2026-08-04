@@ -17,6 +17,7 @@ from bucker.activities.demo import (
     record_task_started,
     run_step,
 )
+from bucker.activities.graph import record_graph_step, register_graph_step
 from bucker.activities.pipeline import (
     choose_adaptive_strategy,
     evaluate_policy,
@@ -28,6 +29,7 @@ from bucker.activities.planner import plan_task
 from bucker.activities.schedule import register_scheduled_task
 from bucker.config import settings
 from bucker.workflows.code_task_workflow import CodeTaskWorkflow
+from bucker.workflows.graph_workflow import GraphWorkflow
 from bucker.workflows.scheduled_task_workflow import ScheduledTaskWorkflow
 from bucker.workflows.task_workflow import TaskWorkflow
 
@@ -52,7 +54,8 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=settings.task_queue,
-        workflows=[TaskWorkflow, CodeTaskWorkflow, ScheduledTaskWorkflow],
+        workflows=[TaskWorkflow, CodeTaskWorkflow, ScheduledTaskWorkflow,
+                   GraphWorkflow],
         activities=[
             # Phase 0 durability demo
             record_task_started, run_step, record_task_completed,
@@ -62,6 +65,9 @@ async def main() -> None:
             choose_adaptive_strategy,
             # Schedules (recurring tasks)
             register_scheduled_task,
+            # Graphs (multi-step DAGs)
+            register_graph_step,
+            record_graph_step,
         ],
     )
     await worker.run()
