@@ -25,6 +25,9 @@ from bucker.core.eventstore import EventStore, create_pool
 from bucker.core.snapshots import SnapshotStore
 from bucker.workflows.task_workflow import TaskWorkflow, TaskWorkflowInput
 
+#: Project .env — the setup wizard's default write target.
+ROOT_ENV = Path(__file__).resolve().parent.parent / ".env"
+
 MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 
 
@@ -248,6 +251,85 @@ async def cmd_templates(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_models(args: argparse.Namespace) -> int:
+    """Browse the catalog; mark what is configured."""
+    from bucker.config import settings
+    from bucker.models import CATALOG, tier_of
+
+    configured = [settings.model, *settings.model_fallbacks]
+    tier_label = {"local": "local ", "free": "free  ", "paid": "paid  "}
+    print(f"{'tier':<7} {'model id':<52} context  configured")
+    for m in CATALOG:
+        mark = "  <-- configured" if m.id in configured else ""
+        print(f"{tier_label.get(m.tier, '?     ')} {m.id:<52} "
+              f"{m.context:>8,}  {mark}")
+    unknown = [c for c in configured if tier_of(c) == "unknown"]
+    if unknown:
+        print("\nconfigured but not in catalog:", ", ".join(unknown))
+    print("\ncurrent chain:", " -> ".join(configured) if configured else "(empty)")
+    return 0
+
+
+async def cmd_providers(args: argparse.Namespace) -> int:
+    """Live provider status: Ollama models + OpenRouter key shape."""
+    from bucker.providers import provider_status
+
+    status = await provider_status()
+    for name, info in status["providers"].items():
+        ok = "OK  " if info["ok"] else "DOWN"
+        print(f"{name:<11} [{ok}] {info['detail']}")
+    if status["ollama_models"]:
+        print(f"\npulled locally: {', '.join(status['ollama_models'])}")
+    print("\nsuggested free-first chain: " +
+          (" -> ".join(status["suggested_chain"]) if status["suggested_chain"]
+           else "(nothing detected — run `bucker setup` for guidance)"))
+    return 0
+
+
+async def cmd_setup(args: argparse.Namespace) -> int:
+    """Wizard: propose a free-first chain; --apply writes it to .env."""
+    from bucker.config import settings
+    from bucker.providers import provider_status
+    from bucker.setup import apply_env, propose_env
+
+    status = await provider_status()
+    proposal = propose_env(
+        ollama_models=status["ollama_models"],
+        openrouter_key_ok=status["openrouter_key_ok"],
+        current_model=settings.model,
+        current_fallbacks=settings.model_fallbacks,
+    )
+
+    print("bucker setup — free-first model configuration\n")
+    for line in proposal["reasoning"]:
+        print(f"  - {line}")
+
+    chain = proposal["chain"]
+    print(f"\nproposed chain: {' -> '.join(chain) if chain else '(none)'}")
+    print("  primary   (BUCKER_MODEL)             :", proposal["primary"])
+    if proposal["fallbacks"]:
+        print("  fallbacks (BUCKER_MODEL_FALLBACKS)  :",
+              ", ".join(proposal["fallbacks"]))
+    else:
+        print("  fallbacks (BUCKER_MODEL_FALLBACKS)  : (none)")
+
+    if proposal["unchanged"]:
+        print("\ncurrent .env already matches the proposal — nothing to do.")
+        return 0
+
+    if not args.apply:
+        print("\nnot written (dry run). Re-run with --apply to write .env.")
+        return 0
+
+    env_path = Path(args.env) if args.env else ROOT_ENV
+    changed = apply_env(proposal, env_path)
+    print(f"\nwrote {env_path}:")
+    for line in changed:
+        print(f"  {line}")
+    print("\nrestart the API/worker to pick up the new chain.")
+    return 0
+
+
 async def cmd_schedules_list(args: argparse.Namespace) -> int:
     from bucker.core.schedules import list_schedules
 
@@ -394,6 +476,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     tp = sub.add_parser("templates", help="list task templates")
     tp.set_defaults(func=cmd_templates)
+
+    md = sub.add_parser("models", help="browse the model catalog (free/paid/local) "
+                                       "and see what is configured")
+    md.set_defaults(func=cmd_models)
+
+    pv = sub.add_parser("providers", help="live provider status: Ollama models, "
+                                          "OpenRouter key shape")
+    pv.set_defaults(func=cmd_providers)
+
+    su = sub.add_parser("setup", help="wizard: propose a free-first model chain "
+                                      "and (with --apply) write it to .env")
+    su.add_argument("--apply", action="store_true",
+                    help="write the proposal into .env (BUCKER_MODEL + "
+                         "BUCKER_MODEL_FALLBACKS only; other lines untouched)")
+    su.add_argument("--env", default=None, help="path to .env (default: project .env)")
+    su.set_defaults(func=cmd_setup)
 
     return p
 

@@ -807,6 +807,58 @@ async def schedules_page(
     )
 
 
+@app.get("/api/models")
+async def models_json(
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Model catalog + configured chain + live provider status."""
+    _check_auth(creds)
+    from bucker.models import CATALOG
+    from bucker.providers import parse_model_chain, provider_status
+
+    provider_info = await provider_status()
+    return {
+        "catalog": [
+            {
+                "id": m.id,
+                "provider": m.provider,
+                "tier": m.tier,
+                "name": m.name,
+                "context": m.context,
+                "notes": m.notes,
+            }
+            for m in CATALOG
+        ],
+        "configured_chain": parse_model_chain(
+            settings.model, settings.model_fallbacks
+        ),
+        "providers": provider_info["providers"],
+        "suggested_chain": provider_info["suggested_chain"],
+    }
+
+
+@app.get("/models-page", response_class=HTMLResponse)
+async def models_page(
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> str:
+    """HTML page: browse models, see tiers and what is configured."""
+    _check_auth(creds)
+    from bucker.api.dashboard import render_models_page
+    from bucker.models import CATALOG
+    from bucker.providers import parse_model_chain, provider_status
+
+    provider_info = await provider_status()
+
+    return render_models_page(
+        catalog=list(CATALOG),
+        configured_chain=parse_model_chain(
+            settings.model, settings.model_fallbacks
+        ),
+        providers=provider_info["providers"],
+        suggested_chain=provider_info["suggested_chain"],
+    )
+
+
 @app.get("/api/system")
 async def system_status_json(
     creds: HTTPAuthorizationCredentials | None = Depends(security),

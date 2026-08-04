@@ -247,6 +247,32 @@ deterministic re-run), `cancel_task`, `system_status`. Register it in your
 agent as a stdio MCP server; it talks to Postgres + Temporal directly, no
 HTTP server needed.
 
+## Models & providers — free, paid, local
+
+bucker runs any model the router can reach, from three tiers:
+
+| tier | what | cost | needs |
+|---|---|---|---|
+| **local** | Ollama models on your machine | $0, private | Ollama installed, `ollama pull <model>` |
+| **free** | hosted free tiers via OpenRouter | $0 | `OPENROUTER_API_KEY` (free account) |
+| **paid** | hosted models via OpenRouter | per token | key + credit |
+
+```bash
+bucker models          # browse the catalog with tiers + configured markers
+bucker providers       # live status: what Ollama has pulled, key shape
+bucker setup           # wizard: proposes a free-first chain (dry run)
+bucker setup --apply   # ...and writes it into .env (other lines untouched)
+```
+
+The wizard proposes a deterministic free-first chain — best local coder →
+best free hosted → best paid — and `BUCKER_MODEL_FALLBACKS` makes the
+router fall through it when a provider fails (dead key, quota, outage).
+Replay determinism is unaffected: replays stay keyed to the primary model,
+and the router never silently reorders the chain.
+
+The dashboard's `/models-page` shows the whole story: tier badges,
+what's configured, provider health, and the suggested chain.
+
 ## Recurring tasks (schedules)
 
 The same verified pipeline, on a cron — "verify the deploy every morning":

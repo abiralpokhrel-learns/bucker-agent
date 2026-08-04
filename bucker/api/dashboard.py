@@ -158,6 +158,7 @@ pre { background: var(--panel2); border: 1px solid var(--border);
 .tmpl b { font-size: 14px; }
 .tmpl span { font-size: 12px; color: var(--muted); line-height: 1.4; }
 .tmpl code { font-size: 11px; color: #7ee0a3; }
+tr.cfg td { background: rgba(126,224,163,.06); }
 /* empty state */
 .cta { text-align: center; padding: 34px 20px; }
 .cta .big { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
@@ -437,6 +438,7 @@ def render_system_page(status: dict) -> str:
   <span class="spacer"></span>
   <a class="btn" href="/">overview</a>
   <a class="btn" href="/usage">usage</a>
+  <a class="btn" href="/models-page">models</a>
   <a class="btn" href="/schedules-page">schedules</a>
   <a class="btn" href="/system">system</a>
   <a class="btn" href="/tasks/new">+ new task</a>
@@ -577,6 +579,93 @@ async function delSchedule(id) {
 </script>
 """ % {"rows": rows, "template_opts": template_opts}
     return _page("Schedules", body)
+
+
+# -------------------------------------------------------------- models page --
+
+
+def render_models_page(
+    catalog: list,
+    *,
+    configured_chain: list | None = None,
+    providers: dict | None = None,
+    suggested_chain: list | None = None,
+) -> str:
+    """Browse the model catalog: free vs paid vs local, what's configured.
+
+    The OmniRoute-inspired "which API am I using" surface: tiers as
+    badges, the configured chain with live provider health, and the
+    setup wizard's suggestion. Pure function of the data the API passes.
+    """
+    configured_chain = configured_chain or []
+    providers = providers or {}
+    suggested_chain = suggested_chain or []
+    configured_ids = {m["id"] for m in configured_chain}
+
+    tier_badge = {
+        "local": '<span class="pill" style="color:#7ee0a3;border-color:rgba(126,224,163,.4)">local</span>',
+        "free": '<span class="pill" style="color:#ffd479;border-color:rgba(255,212,121,.4)">free</span>',
+        "paid": '<span class="pill" style="color:#ff9e9e;border-color:rgba(255,158,158,.4)">paid</span>',
+    }
+    rows = "".join(
+        f'<tr class="{"cfg" if m.id in configured_ids else ""}">'
+        f"<td>{tier_badge.get(m.tier, m.tier)}</td>"
+        f'<td class="mono">{_esc(m.id)}</td>'
+        f'<td>{_esc(m.name)}</td>'
+        f'<td class="num">{m.context:,}</td>'
+        f'<td class="muted">{_esc(m.notes)}</td>'
+        f'<td>{"<b>configured</b>" if m.id in configured_ids else ""}</td>'
+        f"</tr>"
+        for m in catalog
+    )
+
+    chain_html = "".join(
+        f'<div class="status-row"><span class="label mono">{_esc(c["id"])}</span>'
+        f'{tier_badge.get(c["tier"], c["tier"])}'
+        f'<span class="detail">{_esc(c["provider"])}</span></div>'
+        for c in configured_chain
+    ) or '<div class="muted">no models configured</div>'
+
+    prov_rows = "".join(
+        f'<div class="status-row"><span class="label">{_esc(name)}</span>'
+        f'{_status_badge(info)}'
+        f'<span class="detail">{_esc(info.get("detail", ""))}</span></div>'
+        for name, info in sorted(providers.items())
+    ) or '<div class="muted">no providers configured</div>'
+
+    suggest_html = (
+        '<div class="status-row"><span class="label">suggested free-first chain</span>'
+        f'<span class="detail mono">{" → ".join(_esc(m) for m in suggested_chain)}</span></div>'
+        if suggested_chain else ""
+    )
+
+    body = f"""
+<header class="top">
+  <h1>models</h1>
+  <span class="tag">free · paid · local</span>
+  <span class="spacer"></span>
+  <a class="btn" href="/">overview</a>
+  <a class="btn" href="/usage">usage</a>
+  <a class="btn" href="/schedules-page">schedules</a>
+</header>
+
+<div class="grid2">
+  <div class="panel"><h2>Configured chain</h2>{chain_html}</div>
+  <div class="panel"><h2>Providers <span class="hint">key shape only</span></h2>{prov_rows}</div>
+</div>
+
+<div class="panel">{suggest_html}</div>
+
+<div class="panel">
+  <h2>Model catalog</h2>
+  <table>
+    <thead><tr><th>tier</th><th>model id</th><th>name</th>
+      <th class="num">context</th><th>notes</th><th></th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+</div>
+"""
+    return _page("Models", body)
 
 
 # ------------------------------------------------------------- usage page --

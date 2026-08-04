@@ -628,6 +628,27 @@ def test_templates_endpoint_lists_presets(client):
     assert "code-fix" in ids and "research" in ids
 
 
+def test_models_endpoint_has_catalog_and_chain(client):
+    """GET /api/models: catalog tiers + configured chain annotations."""
+    resp = client.get("/api/models")
+    assert resp.status_code == 200
+    data = resp.json()
+    tiers = {m["tier"] for m in data["catalog"]}
+    assert tiers == {"local", "free", "paid"}
+    chain = data["configured_chain"]
+    assert isinstance(chain, list)
+    for entry in chain:
+        assert "id" in entry and "tier" in entry and "provider" in entry
+    assert "suggested_chain" in data
+
+
+def test_models_page_renders_tiers(client):
+    resp = client.get("/models-page")
+    assert resp.status_code == 200
+    assert "Model catalog" in resp.text
+    assert "local" in resp.text and "free" in resp.text and "paid" in resp.text
+
+
 def test_new_task_page_renders_template_cards(client):
     resp = client.get("/tasks/new")
     assert resp.status_code == 200
