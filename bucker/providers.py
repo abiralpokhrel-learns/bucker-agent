@@ -84,10 +84,21 @@ def openrouter_key_status() -> dict[str, Any]:
     return {"ok": False, "detail": "key set, unexpected shape"}
 
 
+def deepseek_key_status() -> dict[str, Any]:
+    """Key shape only — the value is never returned."""
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not key:
+        return {"ok": False, "detail": "no key set (DEEPSEEK_API_KEY)"}
+    if key.startswith("sk-") and len(key) >= 20:
+        return {"ok": True, "detail": "key set, shape ok"}
+    return {"ok": False, "detail": "key set, unexpected shape"}
+
+
 async def provider_status(timeout: float = 2.0) -> dict[str, Any]:
     """Everything the UI needs: providers, local models, key status."""
     ollama_models = await detect_ollama_models(timeout=timeout)
     or_key = openrouter_key_status()
+    ds_key = deepseek_key_status()
 
     providers: dict[str, Any] = {}
     providers["ollama"] = {
@@ -103,14 +114,22 @@ async def provider_status(timeout: float = 2.0) -> dict[str, Any]:
         "models": [],  # catalog-backed, not fetched per request
         "tier": PROVIDERS["openrouter"]["tier"],
     }
+    providers["deepseek"] = {
+        "ok": ds_key["ok"],
+        "detail": ds_key["detail"],
+        "models": [],  # catalog-backed, not fetched per request
+        "tier": PROVIDERS["deepseek"]["tier"],
+    }
 
     return {
         "providers": providers,
         "ollama_models": ollama_models,
         "openrouter_key_ok": or_key["ok"],
+        "deepseek_key_ok": ds_key["ok"],
         "suggested_chain": suggest_chain(
             ollama_models=ollama_models,
             openrouter_key_ok=or_key["ok"],
+            deepseek_key_ok=ds_key["ok"],
         ),
     }
 

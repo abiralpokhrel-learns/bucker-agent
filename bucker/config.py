@@ -93,6 +93,22 @@ class Settings:
             if m.strip()
         )
     )
+
+    # --- provider keys (values never logged; litellm reads the same env) ----
+    #: OpenRouter key (free/paid hosted models). Never printed.
+    openrouter_api_key: str = field(
+        default_factory=lambda: _env("OPENROUTER_API_KEY", "")
+    )
+    #: DeepSeek key (paid hosted models). Never printed.
+    deepseek_api_key: str = field(
+        default_factory=lambda: _env("DEEPSEEK_API_KEY", "")
+    )
+    #: DeepSeek OpenAI-compatible endpoint (default is official).
+    deepseek_base_url: str = field(
+        default_factory=lambda: _env(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+        )
+    )
     #: "live" hits the provider; "recorded" replays stored blobs (step 15) and
     #: is the default so tests and iteration cost nothing.
     model_mode: str = field(default_factory=lambda: _env("BUCKER_MODEL_MODE", "recorded"))

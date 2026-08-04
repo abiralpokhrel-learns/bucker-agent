@@ -296,6 +296,7 @@ async def cmd_setup(args: argparse.Namespace) -> int:
     proposal = propose_env(
         ollama_models=status["ollama_models"],
         openrouter_key_ok=status["openrouter_key_ok"],
+        deepseek_key_ok=status.get("deepseek_key_ok", False),
         current_model=settings.model,
         current_fallbacks=settings.model_fallbacks,
     )

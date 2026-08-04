@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from bucker.config import settings
 from bucker.core.blob import BlobStore
 from bucker.router.client import (
     ModelCallFailed,
@@ -290,6 +291,56 @@ async def test_all_fail_raises_with_every_error(monkeypatch, tmp_path):
 
     with pytest.raises(ModelCallFailed, match="all models in the chain failed"):
         await router.complete([{"role": "user", "content": "hi"}], purpose="planner")
+
+
+async def test_empty_content_falls_through_chain(monkeypatch, tmp_path):
+    """Reasoning models that spend the budget on reasoning return '' —
+    that is a failed attempt, not a completion: fall to the next model."""
+    calls: list[str] = []
+
+    async def acompletion(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "deepseek/deepseek-v4-flash":
+            return _FakeResponse("")          # reasoning ate the budget
+        return _FakeResponse("real answer")
+
+    _stub_litellm(monkeypatch, acompletion)
+    router = ModelRouter(
+        BlobStore(tmp_path / "blobs"),
+        model="deepseek/deepseek-v4-flash",
+        mode="live",
+        recordings=RecordingStore(tmp_path / "recordings"),
+        fallbacks=("ollama/qwen2.5-coder:7b",),
+    )
+
+    resp = await router.complete(
+        [{"role": "user", "content": "hi"}], purpose="planner"
+    )
+    assert calls == ["deepseek/deepseek-v4-flash", "ollama/qwen2.5-coder:7b"]
+    assert resp.text == "real answer"
+    assert resp.model == "ollama/qwen2.5-coder:7b"
+
+
+async def test_deepseek_model_gets_api_base(monkeypatch, tmp_path):
+    """deepseek/ models must reach the configured DeepSeek endpoint."""
+    captured: dict = {}
+
+    async def acompletion(**kwargs):
+        captured.update(kwargs)
+        return _FakeResponse("ok from deepseek")
+
+    _stub_litellm(monkeypatch, acompletion)
+    router = ModelRouter(
+        BlobStore(tmp_path / "blobs"),
+        model="deepseek/deepseek-v4-flash",
+        mode="live",
+        recordings=RecordingStore(tmp_path / "recordings"),
+    )
+    resp = await router.complete(
+        [{"role": "user", "content": "hi"}], purpose="planner"
+    )
+    assert captured.get("api_base") == settings.deepseek_base_url
+    assert resp.text == "ok from deepseek"
 
 
 async def test_fallback_recording_notes_the_serving_model(monkeypatch, tmp_path):

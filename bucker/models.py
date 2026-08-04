@@ -84,6 +84,10 @@ CATALOG: tuple[CatalogModel, ...] = (
     _m(provider="openrouter", tier="free", name="Gemini 2.5 Flash (free)",
        context=1_000_000, model_id="google/gemini-2.5-flash:free",
        notes="free tier of Gemini 2.5 Flash; subject to availability"),
+    # ------------------------------------------------------------- paid (DeepSeek)
+    _m(provider="deepseek", tier="paid", name="DeepSeek V4 Flash",
+       context=128_000, model_id="deepseek-v4-flash",
+       notes="official DeepSeek API, OpenAI-compatible; cheap per token"),
     # -------------------------------------------------------------- paid (OpenRouter)
     _m(provider="openrouter", tier="paid", name="Claude Sonnet 4.5",
        context=200_000, model_id="anthropic/claude-sonnet-4.5",
@@ -112,6 +116,12 @@ PROVIDERS: dict[str, dict] = {
         "env_key": "OPENROUTER_API_KEY",
         "base_url": "https://openrouter.ai/api/v1",
         "tier": "free+paid",
+    },
+    "deepseek": {
+        "name": "DeepSeek",
+        "env_key": "DEEPSEEK_API_KEY",
+        "base_url": "https://api.deepseek.com",
+        "tier": "paid",
     },
 }
 
@@ -146,6 +156,7 @@ def suggest_chain(
     *,
     ollama_models: list[str],
     openrouter_key_ok: bool,
+    deepseek_key_ok: bool = False,
 ) -> list[str]:
     """Propose a deterministic, free-first fallback chain.
 
@@ -153,9 +164,10 @@ def suggest_chain(
     at runtime (replay determinism is keyed to the primary). This is what
     the setup wizard writes into BUCKER_MODEL + BUCKER_MODEL_FALLBACKS.
 
-    Ordering: best local coder (if installed) → best free hosted (if a key
-    works) → best paid (if a key works). Always exactly the models that
-    can actually serve today.
+    Ordering: best local coder (if installed) → best FREE hosted OpenRouter
+    model (if a key works — paid OpenRouter models are never suggested) →
+    DeepSeek V4 Flash (if a key works). Always exactly the models that can
+    actually serve today.
     """
     chain: list[str] = []
 
@@ -170,12 +182,13 @@ def suggest_chain(
         # Any other local model the user already has.
         chain.append(f"ollama/{ollama_models[0]}")
 
-    # 2. Free hosted (needs a working OpenRouter key).
+    # 2. FREE hosted OpenRouter only (needs a working key). Paid OpenRouter
+    #    models are intentionally never suggested — free tier first, always.
     if openrouter_key_ok:
         chain.append("openrouter/nvidia/nemotron-3-super-120b-a12b:free")
 
-    # 3. Paid (needs a key; credit is the user's problem to check).
-    if openrouter_key_ok:
-        chain.append("openrouter/anthropic/claude-sonnet-4.5")
+    # 3. DeepSeek V4 Flash (paid, needs its own key).
+    if deepseek_key_ok:
+        chain.append("deepseek/deepseek-v4-flash")
 
     return chain

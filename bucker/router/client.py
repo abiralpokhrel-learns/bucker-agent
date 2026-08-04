@@ -258,7 +258,13 @@ class ModelRouter:
         for model in chain:
             started = time.perf_counter()
             try:
-                response = await litellm.acompletion(model=model, **kwargs)
+                # DeepSeek is OpenAI-compatible but has its own endpoint;
+                # litellm's default already matches, but honor an explicit
+                # DEEPSEEK_BASE_URL override rather than assuming.
+                model_kwargs = dict(kwargs)
+                if model.startswith("deepseek/") and settings.deepseek_base_url:
+                    model_kwargs["api_base"] = settings.deepseek_base_url
+                response = await litellm.acompletion(model=model, **model_kwargs)
             except Exception as exc:  # noqa: BLE001 — surface every provider error
                 errors.append(f"{model}: {type(exc).__name__}: {exc}")
                 continue
@@ -269,6 +275,18 @@ class ModelRouter:
 
             text = raw["choices"][0]["message"]["content"] or ""
             usage = raw.get("usage") or {}
+
+            # Empty content is a failed attempt, not a success: reasoning
+            # models (DeepSeek v4-flash) can spend the whole output budget
+            # on reasoning_content and return an empty message. Returning
+            # "" as a valid completion would poison the planner/worker with
+            # an unparseable "response". Fall through to the next model.
+            if not text.strip():
+                errors.append(
+                    f"{model}: empty content (reasoning consumed the "
+                    f"output budget? usage={usage.get('completion_tokens')})"
+                )
+                continue
 
             try:
                 cost_usd = float(litellm.completion_cost(completion_response=response) or 0.0)

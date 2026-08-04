@@ -26,6 +26,7 @@ def propose_env(
     *,
     ollama_models: list[str],
     openrouter_key_ok: bool,
+    deepseek_key_ok: bool = False,
     current_model: str = "",
     current_fallbacks: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -39,6 +40,7 @@ def propose_env(
     chain = suggest_chain(
         ollama_models=ollama_models,
         openrouter_key_ok=openrouter_key_ok,
+        deepseek_key_ok=deepseek_key_ok,
     )
     current_fallbacks = current_fallbacks or []
 
@@ -54,10 +56,18 @@ def propose_env(
 
     if openrouter_key_ok:
         reasoning.append("OpenRouter key looks valid — free hosted tier is "
-                         "available as a fallback")
+                         "available as a fallback (paid models are never "
+                         "suggested)")
     else:
         reasoning.append("no usable OpenRouter key — hosted models are "
                          "skipped (set OPENROUTER_API_KEY to add them)")
+
+    if deepseek_key_ok:
+        reasoning.append("DeepSeek key looks valid — deepseek-v4-flash is "
+                         "available as the paid step")
+    else:
+        reasoning.append("no DeepSeek key — deepseek-v4-flash skipped "
+                         "(set DEEPSEEK_API_KEY to add it)")
 
     if not chain:
         chain = ["ollama/qwen2.5-coder:7b"]  # explicit default, clearly marked

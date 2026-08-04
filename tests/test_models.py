@@ -16,7 +16,11 @@ from bucker.models import (
     suggest_chain,
     tier_of,
 )
-from bucker.providers import openrouter_key_status, parse_model_chain
+from bucker.providers import (
+    deepseek_key_status,
+    openrouter_key_status,
+    parse_model_chain,
+)
 from bucker.setup import apply_env, propose_env
 
 # ------------------------------------------------------------ catalog ----
@@ -25,7 +29,7 @@ from bucker.setup import apply_env, propose_env
 def test_catalog_ids_are_router_ids():
     """Every id is exactly what BUCKER_MODEL accepts."""
     for m in CATALOG:
-        assert m.id.startswith(("ollama/", "openrouter/")), m.id
+        assert m.id.startswith(("ollama/", "openrouter/", "deepseek/")), m.id
         assert "/" in m.id and not m.id.endswith("/")
 
 
@@ -68,10 +72,13 @@ def test_suggest_chain_free_first_with_local():
     chain = suggest_chain(
         ollama_models=["qwen2.5-coder:3b", "qwen2.5-coder:7b"],
         openrouter_key_ok=True,
+        deepseek_key_ok=True,
     )
     assert chain[0] == "ollama/qwen2.5-coder:7b"  # best local first
     assert "openrouter/nvidia/nemotron-3-super-120b-a12b:free" in chain
-    assert "openrouter/anthropic/claude-sonnet-4.5" in chain  # paid last
+    # Paid OpenRouter models are NEVER suggested — free tier only.
+    assert not any(":free" not in m and m.startswith("openrouter/") for m in chain)
+    assert chain[-1] == "deepseek/deepseek-v4-flash"  # DeepSeek is the paid step
 
 
 def test_suggest_chain_skips_hosted_without_key():
@@ -83,6 +90,17 @@ def test_suggest_chain_skips_hosted_without_key():
 def test_suggest_chain_without_ollama_uses_free_only():
     chain = suggest_chain(ollama_models=[], openrouter_key_ok=True)
     assert chain[0] == "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+    # No DeepSeek without its own key.
+    assert "deepseek/" not in chain
+
+
+def test_suggest_chain_requires_deepseek_key_for_deepseek():
+    chain = suggest_chain(ollama_models=[], openrouter_key_ok=False,
+                          deepseek_key_ok=True)
+    assert chain == ["deepseek/deepseek-v4-flash"]
+    no_ds = suggest_chain(ollama_models=[], openrouter_key_ok=False,
+                          deepseek_key_ok=False)
+    assert no_ds == []
 
 
 def test_suggest_chain_is_deterministic():
@@ -116,9 +134,10 @@ def test_propose_env_unchanged_when_matching():
     p = propose_env(
         ollama_models=["qwen2.5-coder:7b"],
         openrouter_key_ok=True,
+        deepseek_key_ok=True,
         current_model="ollama/qwen2.5-coder:7b",
         current_fallbacks=["openrouter/nvidia/nemotron-3-super-120b-a12b:free",
-                           "openrouter/anthropic/claude-sonnet-4.5"],
+                           "deepseek/deepseek-v4-flash"],
     )
     assert p["unchanged"] is True
 
@@ -171,6 +190,15 @@ def test_openrouter_key_status_shape_only(monkeypatch):
     assert "x" * 64 not in status["detail"]  # never leaks the value
     monkeypatch.setenv("OPENROUTER_API_KEY", "not-a-key")
     assert openrouter_key_status()["ok"] is False
+
+
+def test_deepseek_key_status_shape_only(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    assert deepseek_key_status()["ok"] is False
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-" + "x" * 30)
+    assert deepseek_key_status()["ok"] is True
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "short")
+    assert deepseek_key_status()["ok"] is False
 
 
 def test_parse_model_chain_annotates_tiers():
