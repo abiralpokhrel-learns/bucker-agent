@@ -79,6 +79,82 @@ def test_extract_rejects_garbage():
         extract_json("I cannot help with that.")
 
 
+# ------------------------------------------------- quote-repair fallback ---
+# Small models escape newlines but forget quotes: a Python docstring inside a
+# diff comes back as raw \"\"\" inside the JSON string. The repair must fix
+# the encoding without ever touching valid JSON.
+
+
+def test_repair_unescaped_docstring_in_diff():
+    """The exact failure from the first live smoke run (qwen2.5-coder:3b)."""
+    raw = (
+        '{"status": "produced", "diff": "--- calc.py\\n+++ calc.py\\n'
+        '@@ -1,5 +1,6 @@\\ndef add(a, b):\\n    """Return the sum."""\\n'
+        '    return a + b\\n", "files_touched": ["calc.py"]}'
+    )
+    parsed = extract_json(raw)
+    assert parsed["status"] == "produced"
+    assert '"""Return the sum."""' in parsed["diff"], \
+        "the diff content must survive the repair byte-for-byte"
+
+
+def test_valid_json_is_never_changed():
+    text = '{"a": "x", "b": [1, 2], "c": {"d": "y"}}'
+    assert extract_json(text) == {"a": "x", "b": [1, 2], "c": {"d": "y"}}
+
+
+def test_already_escaped_quotes_stay_intact():
+    text = '{"a": "he said \\"hi\\"", "b": 2}'
+    assert extract_json(text) == {"a": 'he said "hi"', "b": 2}
+
+
+def test_escaped_backslash_pairs_are_respected():
+    """A literal backslash-n in the diff (already escaped) must not confuse
+    the repair into treating the following quote as interior."""
+    text = '{"diff": "a\\\\nb", "ok": true}'
+    parsed = extract_json(text)
+    assert parsed["diff"] == "a\\nb"
+    assert parsed["ok"] is True
+
+
+def test_repair_handles_multiple_docstrings():
+    raw = (
+        '{"diff": "def f():\\n    """Doc A."""\\n    pass\\n'
+        'def g():\\n    """Doc B."""\\n    pass\\n", "files": []}'
+    )
+    parsed = extract_json(raw)
+    assert '"""Doc A."""' in parsed["diff"]
+    assert '"""Doc B."""' in parsed["diff"]
+
+
+def test_repair_inside_markdown_fence():
+    raw = (
+        '```json\n{"diff": "x\\n    """doc"""\\n", "n": 1}\n```'
+    )
+    assert extract_json(raw)["n"] == 1
+
+
+def test_repair_unterminated_string_closed_by_real_newline():
+    """Second live-run failure: the model forgot the diff string's closing
+    quote and emitted a real newline where it should have ended. The repair
+    must close the string at the real newline so the object parses."""
+    raw = (
+        '{\n'
+        '  "status": "produced",\n'
+        '  "diff": "--- calc.py\\n+++ calc.py\\n'
+        '@@ -1,5 +1,6 @@\\ndef add(a, b):\\n'
+        '    """Return the sum."""\\n    return a + b\\n'
+        'def sub(a, b):\\n    """Return the difference."""\n'
+        '  "files_touched": ["calc.py"],\n'
+        '  "commands_run": ["python test_calc.py"]\n'
+        '}'
+    )
+    parsed = extract_json(raw)
+    assert parsed["status"] == "produced"
+    assert '"""Return the difference."""' in parsed["diff"]
+    assert parsed["files_touched"] == ["calc.py"]
+
+
 # ------------------------------------------------------------------ happy ---
 async def test_valid_contract_first_try():
     router = FakeRouter([json.dumps(VALID)])

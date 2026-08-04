@@ -17,8 +17,19 @@ Rules:
 
 - The diff must be a valid unified diff that applies cleanly at the workspace
   root. Include correct `---`/`+++` headers and `@@` hunks.
+- **JSON escaping is mandatory.** Every `"` inside a string value must be
+  written as `\"` and every `\` as `\\`. The most common mistake is writing a
+  Python docstring inside the diff with raw quotes, e.g.
+  `"""Return the sum."""` — every one of those quotes must be escaped.
+  Newlines inside a string must be written as `\n` (backslash-n), never as a
+  real line break.
 - Touch only the files listed in the contract's "files", when that list is
   non-empty.
+- **A file that exists but does not yet contain what the objective asks for
+  is not a blocker — that is the work.** The objective describes a change to
+  make, and the workspace shows the current state. Write the change. Only
+  return "blocked" for genuinely missing context, an ambiguous objective, or
+  a file that does not exist.
 - If you cannot do the task — missing context, ambiguous objective, a file that
   does not exist — return status "blocked" with a specific reason. **Do not
   invent a plausible-looking diff.** A blocked task with a clear reason is a

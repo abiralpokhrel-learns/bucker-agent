@@ -36,7 +36,7 @@ from bucker.router.client import ModelResponse, ModelRouter
 PROMPTS = Path(__file__).parent / "prompts"
 
 #: Verifiers the planner may choose from. Grows as verifiers are registered.
-KNOWN_VERIFIERS = ("python_test_runner", "noop")
+KNOWN_VERIFIERS = ("python_test_runner", "citation_checker", "noop")
 
 
 class PlanningFailed(Exception):
@@ -83,6 +83,108 @@ class PlanResult:
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 
 
+def _repair_unescaped_quotes(text: str) -> str:
+    """Escape double quotes that sit inside JSON string values.
+
+    Small models routinely escape newlines but forget to escape quotes —
+    e.g. a Python docstring in a diff written as raw ``\"\"\"...\"\"\"`` inside
+    a string value. json.loads then fails on the first interior quote.
+
+    The rule: inside a string, a quote that cannot legally close the string
+    (i.e. the next character is not ``,`` ``}`` ``]`` ``:`` whitespace or
+    end-of-input) is an interior quote and gets escaped. And a real newline
+    inside a string — illegal in JSON, since newlines must be written as
+    ``\n`` — closes the string: models that forget the closing quote often
+    emit a real newline exactly where the string should have ended, and
+    closing there lets the rest of the object parse. Valid JSON is never
+    changed: a legal closing quote is always followed by one of those
+    characters, and a valid string never contains a real newline. The result
+    still has to pass the schema validator — this repairs the *encoding*,
+    never the contract.
+    """
+    out: list[str] = []
+    in_string = False
+    i = 0
+    n = len(text)
+
+    def _maybe_comma(j: int) -> None:
+        """Insert a missing comma after a just-closed string.
+
+        The model that forgets a closing quote usually forgets the following
+        comma too: ``"...value"\n  "next_key": ...``. In valid JSON a real
+        newline after a string value is always followed by ``,`` (or ``}``/
+        ``]``/EOF), so if a real newline and then a quote follow, the comma
+        is missing and is inserted. Never fires on valid input.
+        """
+        k = j
+        saw_newline = False
+        while k < n and text[k] in " \t\r\n":
+            if text[k] in "\r\n":
+                saw_newline = True
+            k += 1
+        if saw_newline and k < n and text[k] == '"':
+            out.append(",")
+
+    while i < n:
+        ch = text[i]
+        if not in_string:
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+            i += 1
+            continue
+        if ch == "\\":
+            # Escape pair (e.g. \" or \\ or \n): keep both characters.
+            out.append(ch)
+            if i + 1 < n:
+                out.append(text[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            nxt = text[i + 1] if i + 1 < n else ""
+            # A run of three plain quotes (a Python docstring) right before
+            # the end of a string is content, not a closing quote — the
+            # model wrote """...""" raw. Escaping it lets the real-newline
+            # rule close the string below and keeps the content intact.
+            docstring_triple = i >= 2 and text[i - 1] == '"' and text[i - 2] == '"'
+            if (nxt in ",}]:" or nxt.isspace() or nxt == "") and not docstring_triple:
+                out.append(ch)
+                in_string = False
+                _maybe_comma(i + 1)
+            else:
+                out.append('\\"')
+            i += 1
+            continue
+        if ch == "\n" or ch == "\r":
+            # Real newline inside a string: the model forgot the closing
+            # quote. Close the string here and continue parsing structure.
+            # The lookahead starts at ``i`` so this newline counts as the
+            # separator before the next key (which usually also lost its
+            # comma).
+            out.append('"')
+            in_string = False
+            _maybe_comma(i)
+            out.append(ch)
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _try_loads(text: str) -> dict | None:
+    """json.loads, then the quote-repair fallback. Returns None on failure."""
+    for candidate in (text, _repair_unescaped_quotes(text)):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            raise ValueError(f"expected a JSON object, got {type(parsed).__name__}")
+        return parsed
+    return None
+
+
 def extract_json(text: str) -> dict:
     """Pull one JSON object out of a model response.
 
@@ -90,24 +192,32 @@ def extract_json(text: str) -> dict:
     told not to. Stripping that is not "being lenient about the contract" — the
     contract is about the *content* of the object, which is still validated in
     full. Failing on a stray fence would just burn a retry on a formatting tic.
+
+    The quote-repair fallback is the same kind of bounded tolerance: unescaped
+    quotes inside string values are a mechanical encoding error, and the
+    repaired object still must pass the schema validator downstream.
     """
     cleaned = _FENCE.sub("", text).strip()
 
-    try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError:
-        # Fall back to the outermost {...} span.
-        start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise ValueError("no JSON object found in response") from None
-        try:
-            parsed = json.loads(cleaned[start:end + 1])
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"malformed JSON in response: {exc}") from exc
+    parsed = _try_loads(cleaned)
+    if parsed is not None:
+        return parsed
 
-    if not isinstance(parsed, dict):
-        raise ValueError(f"expected a JSON object, got {type(parsed).__name__}")
-    return parsed
+    # Fall back to the outermost {...} span.
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("no JSON object found in response") from None
+    span = cleaned[start:end + 1]
+    parsed = _try_loads(span)
+    if parsed is not None:
+        return parsed
+    # Re-run the plain parse to surface the real decoder error to the caller;
+    # a specific error makes the repair prompt specific.
+    try:
+        json.loads(span)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"malformed JSON in response: {exc}") from exc
+    raise ValueError("malformed JSON in response") from None
 
 
 def _validate(raw_text: str) -> tuple[Task | None, list[str]]:
