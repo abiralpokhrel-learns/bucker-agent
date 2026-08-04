@@ -3,10 +3,28 @@ name = "bucker-agent"
 version = "0.1.0"
 description = "Durable, verified agent execution. Nothing is trusted until it's verified, nothing is lost when it crashes, nothing overspends silently, nothing changes in production until it's proven better."
 readme = "README.md"
-requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+requires-python = ">=3.11,<3.14"  # supported/tested: 3.11, 3.12 (see classifiers)
+license = "Apache-2.0"
 authors = [{ name = "Baikuntha" }]
-keywords = ["ai-agents", "durable-execution", "event-sourcing", "temporal", "evaluation"]
+keywords = [
+    "ai-agents",
+    "durable-execution",
+    "event-sourcing",
+    "temporal",
+    "evaluation",
+    "verification",
+    "sandbox",
+]
+classifiers = [
+    # Prototype until M2 (the benchmark gate) passes with live numbers; flip
+    # to 4 - Beta when a paired SWE-bench evaluation is published.
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 dependencies = [
     "temporalio>=1.7",
@@ -29,6 +47,13 @@ dev = [
 
 [project.scripts]
 bucker = "bucker.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/<your-org>/bucker-agent"
+Repository = "https://github.com/<your-org>/bucker-agent"
+Issues = "https://github.com/<your-org>/bucker-agent/issues"
+Documentation = "https://github.com/<your-org>/bucker-agent#readme"
+Changelog = "https://github.com/<your-org>/bucker-agent/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
@@ -53,3 +78,12 @@ ignore = ["B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E501"]
+# Template module: long lines inside HTML/JS f-strings are inherent.
+"bucker/api/dashboard.py" = ["E501"]
+# Doctor's subprocess probe code is one long -c string by necessity.
+"scripts/doctor.py" = ["E501"]
+
+[dependency-groups]
+dev = [
+    "swebench>=4.1.0",
+]

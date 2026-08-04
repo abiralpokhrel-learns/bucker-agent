@@ -102,6 +102,13 @@ CREATE TABLE IF NOT EXISTS candidates (
 
 -- ------------------------------------------------------ append-only role ----
 -- The application connects as bucker_app. It cannot rewrite history.
+--
+-- DEV BOOTSTRAP, NOT A PRODUCTION SCHEMA: the role is created here with a
+-- fixed password ('dev') so a fresh clone works out of the box. In any
+-- deployment that faces real traffic, create the role yourself with a strong
+-- password (or a secret manager), then let this block no-op (it only creates
+-- the role when missing — your credentials are never overwritten) and point
+-- BUCKER_DATABASE_URL at the real one. See docs/DEPLOYMENT.md.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bucker_app') THEN
