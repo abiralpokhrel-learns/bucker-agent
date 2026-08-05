@@ -47,6 +47,18 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   origin-form via `urlparse`.
 - Memory prune ordering is deterministic even under Windows' ~15.6ms
   clock tick (strictly increasing fact timestamps).
+- `tasks.status` was a stale cache (folded "pending") — the terminal
+  policy activity now keeps it honest, and `scripts/backfill_status.py`
+  replays the event stream to sync historical rows.
+- **Human-review statuses were illegal in the DB schema** — the original
+  `tasks_status_check` did not allow `human_approved`/`human_rejected`,
+  so the approval gate's UPDATE would have failed on a real database
+  (API tests used a fake connection and missed it). `migrations/003`
+  re-declares the constraint; live-verified: approve on a real DB flips
+  the row to `human_approved`, bogus statuses are still rejected
+  (`CheckViolationError`). Migration tripwire tests added.
+- API tests now simulate "Temporal down" hermetically (patch
+  `Client.connect`) instead of relying on ambient infra state.
 
 - **Model fallback chain** — `BUCKER_MODEL_FALLBACKS` (comma-separated) is
   tried in order when the primary model fails (provider down, key rejected,

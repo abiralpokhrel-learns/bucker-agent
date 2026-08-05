@@ -6,7 +6,8 @@ reports.
 
 ## 1. Reporting a Vulnerability
 
-Report privately via [GitHub Security Advisories](https://github.com/<your-org>/bucker-agent/security/advisories/new)
+Report privately via [GitHub Security Advisories](https://github.com/bucker-agent/bucker-agent/security/advisories/new)
+<!-- TODO(pre-publish): the URL above is a pre-publish placeholder; swap in the real repo before publishing. -->
 (adjust the URL once the repository is public). Do **not** open public issues
 for security vulnerabilities. There is no bug bounty program.
 

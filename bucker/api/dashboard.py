@@ -988,7 +988,8 @@ def _task_control_bar(task_id: str, status: str) -> str:
     event stream is never mutated.
     """
     terminal = status in (
-        "completed", "failed", "verification_failed", "halted", "needs_human_review",
+        "completed", "failed", "verification_failed", "halted",
+        "needs_human_review", "human_approved", "human_rejected",
     )
     active = status in ("pending", "in_progress")
 
