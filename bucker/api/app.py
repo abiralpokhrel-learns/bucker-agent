@@ -70,6 +70,10 @@ app = FastAPI(
     description="Durable, verified agent execution. Nothing is trusted until verified.",
 )
 
+from bucker.api.gateway import router as gateway_router  # noqa: E402
+
+app.include_router(gateway_router)
+
 security = HTTPBearer(auto_error=False)
 
 #: Initialised in lifespan so routes never import asyncpg at module scope.

@@ -50,6 +50,8 @@ evidence-based improvement is what the system actually *is*.
 
 - [Quickstart](#quickstart-5-minutes)
 - [How it works](#how-it-works)
+- [Run everything in Docker](#run-everything-in-docker-zero-local-installs)
+- [Use it as an API (OpenAI-compatible gateway)](#use-it-as-an-api-openai-compatible-gateway)
 - [Run the pipeline end to end](#run-the-pipeline-end-to-end)
 - [Choose a model](#choose-a-model)
 - [Multi-step task graphs](#multi-step-task-graphs-graph-engineering)
@@ -137,6 +139,39 @@ them live. Full pipeline details in
 - 🗄️ **Backups** — one-command Postgres + blobstore dump with a restore drill
 
 
+
+## Run everything in Docker (zero local installs)
+
+Have Docker but don't want Python/uv/the Temporal CLI on your machine?
+The whole stack — Postgres + Temporal + worker + dashboard — runs in
+containers:
+
+```bash
+docker compose up --build -d        # everything, one command
+docker build -t bucker-sandbox -f Dockerfile.sandbox .   # the sandbox image
+open http://localhost:8123
+```
+
+(Docker Desktop proxies the docker socket into the worker container, so
+sandboxes still work. `.env` is optional — dev defaults apply without it.)
+
+## Use it as an API (OpenAI-compatible gateway)
+
+Your `BUCKER_API_TOKEN` is an API key. Point any OpenAI-compatible client
+at bucker and the free-first chain (DeepSeek → Ollama → OpenRouter free)
+routes with auto-fallback. Every call is audited as a task with cost:
+
+```bash
+curl http://localhost:8123/v1/chat/completions \
+  -H "Authorization: Bearer $BUCKER_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek/deepseek-v4-flash",
+       "messages":[{"role":"user","content":"say hi"}]}'
+```
+
+`GET /v1/models` lists the configured chain. Live-verified 2026-08-05:
+a real DeepSeek call through the gateway returned an OpenAI-shaped
+response with usage + cost, and the call appeared in the audit trail.
 
 ## Windows notes (native)
 

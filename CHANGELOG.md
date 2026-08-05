@@ -81,6 +81,16 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Postgres; `scripts/restore_drill.py` (PASSED live, 947 rows);
   doctor diagnoses the uv Python-install trap.
 
+- **Makeover pass — gateway + Docker path + dashboard polish**:
+  `POST /v1/chat/completions` + `GET /v1/models` (OpenAI-compatible
+  gateway, like OmniRoute): your BUCKER_API_TOKEN is the API key, the
+  free-first chain routes with auto-fallback, every call is audited as
+  a task with cost (live-proven: real DeepSeek call → OpenAI-shaped
+  response, $0.000026); `Dockerfile` + full-stack compose (postgres +
+  temporalio/auto-setup + api + worker, `.env` optional) so a fresh
+  machine needs ONLY Docker; `bucker dev`/`setup` from the usability
+  pass; dashboard CSS polish (sticky gradient header, hover states,
+  focus rings).
 - **One-command setup (usability pass)** — new `bucker setup` (checks
   prerequisites, generates `.env` + a real API token, starts Postgres,
   migrates — one command) and `bucker dev` (starts Temporal + worker +

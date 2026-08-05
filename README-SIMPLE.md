@@ -171,7 +171,22 @@ uv run python -m scripts.backup
 
 ---
 
-## Step 8 - Running bigger things
+## Step 8 - Use it as an API (like OmniRoute)
+
+Your `BUCKER_API_TOKEN` is an API key. Point ANY OpenAI-compatible client
+at bucker and it routes to real models (DeepSeek → free local Ollama →
+free OpenRouter) automatically:
+
+```bash
+curl http://localhost:8123/v1/chat/completions \
+  -H "Authorization: Bearer YOUR-BUCKER-API-TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"say hi"}]}'
+```
+
+Every call is tracked and shows up on the dashboard, with its cost.
+
+## Step 9 - Running bigger things
 
 - **Graphs** - run several tasks in a smart order (some in parallel):
 

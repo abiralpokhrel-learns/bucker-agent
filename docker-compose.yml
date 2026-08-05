@@ -1,9 +1,17 @@
-# Phase 0 infrastructure. Postgres only — Temporal runs from the CLI dev server
-# (`temporal server start-dev`), which is lighter and gives you the UI at :8233.
+# bucker-agent full stack — the "zero local tooling" path.
 #
-#   docker compose up -d
-#   uv run python -m bucker.cli migrate
+#   docker compose up --build -d
+#   open http://localhost:8123
 #
+# That runs Postgres + Temporal + worker + dashboard, all in containers.
+# The ONLY prerequisite on the host is Docker (Desktop). Everything else —
+# Python, uv, the Temporal CLI — is no longer needed locally.
+#
+# Sandbox note: the worker drives the sandbox via the HOST docker socket
+# (/var/run/docker.sock is proxied by Docker Desktop on Windows too), so
+# bucker-sandbox must exist as a host image first:
+#   docker build -t bucker-sandbox -f Dockerfile.sandbox .
+
 services:
   postgres:
     # Pinned by digest for reproducible infrastructure. To refresh:
@@ -17,11 +25,84 @@ services:
       - "5432:5432"
     volumes:
       - bucker_pgdata:/var/lib/postgresql/data
+      # Creates the extra 'temporal' database on first boot (auto-setup
+      # needs it for its own schema; bucker's DB is created by POSTGRES_DB).
+      - ./init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d bucker"]
       interval: 5s
       timeout: 5s
       retries: 10
 
+  temporal:
+    # Temporal server in a container — no Temporal CLI install needed.
+    # AUTO-SETUP (proven 2026-08-05): needs a real DB, so it uses the
+    # postgres service above + the init/01-databases.sql script.
+    # NOTE: the dev-server web UI (:8233) is a separate image and is not
+    # bundled here — bucker's own dashboard is the UI.
+    image: temporalio/auto-setup:1.28.4
+    container_name: bucker-temporal
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: dev
+      POSTGRES_DB: temporal
+    ports:
+      - "7233:7233"   # gRPC (workers + clients)
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7233"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    container_name: bucker-api
+    command: ["python", "-m", "uvicorn", "bucker.api.app:app", "--host", "0.0.0.0", "--port", "8123"]
+    env_file:
+      - path: .env
+        required: false   # compose >= 2.24: works with NO .env (dev defaults)
+    environment:
+      BUCKER_DATABASE_URL: postgresql://postgres:dev@postgres:5432/bucker
+      BUCKER_TEMPORAL_HOST: temporal:7233
+    ports:
+      - "8123:8123"
+    volumes:
+      - bucker_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+
+  worker:
+    build: .
+    container_name: bucker-worker
+    command: ["python", "-m", "bucker.worker"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BUCKER_MODEL_MODE: live
+      BUCKER_DATABASE_URL: postgresql://postgres:dev@postgres:5432/bucker
+      BUCKER_TEMPORAL_HOST: temporal:7233
+    volumes:
+      - bucker_data:/data
+      # Host docker socket — lets the worker launch sandbox containers.
+      # Docker Desktop proxies this on Windows.
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+
 volumes:
   bucker_pgdata:
+  bucker_data:

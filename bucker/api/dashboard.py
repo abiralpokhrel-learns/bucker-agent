@@ -154,6 +154,22 @@ pre { background: var(--panel2); border: 1px solid var(--border);
 .tmpl { display: flex; flex-direction: column; gap: 6px; text-align: left; cursor: pointer;
         background: rgba(255,255,255,.03); border: 1px solid var(--border);
         border-radius: 8px; padding: 12px; font: inherit; color: inherit; }
+/* ---------------------------------------------------------------- polish */
+header.top { position: sticky; top: 0; z-index: 10; background: rgba(13,17,23,.92);
+             backdrop-filter: blur(8px); border: 1px solid var(--border);
+             border-radius: 12px; padding: 12px 16px; }
+header.top h1 { background: linear-gradient(90deg, var(--blue), var(--purple));
+                -webkit-background-clip: text; background-clip: text;
+                color: transparent; font-size: 21px; }
+.card, .panel, .hero { transition: border-color .15s ease, transform .15s ease; }
+.card:hover, .panel:hover { border-color: rgba(88,166,255,.4); }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible,
+select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.timeline li .dot { box-shadow: 0 0 0 3px rgba(139,148,158,.15); }
+.badge { box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
+footer { color: var(--muted); font-size: 12px; text-align: center;
+         margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); }
+@media (max-width: 720px) { header.top { flex-wrap: wrap; } }
 .tmpl:hover { border-color: rgba(112,170,255,.6); background: rgba(112,170,255,.06); }
 .tmpl b { font-size: 14px; }
 .tmpl span { font-size: 12px; color: var(--muted); line-height: 1.4; }
