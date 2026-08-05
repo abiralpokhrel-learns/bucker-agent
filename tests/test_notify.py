@@ -6,6 +6,8 @@ no-op when nothing is configured (verified with a monkeypatched config).
 
 from __future__ import annotations
 
+import pytest
+
 from bucker.core.notify import (
     build_graph_message,
     build_task_message,
@@ -124,3 +126,23 @@ def test_payload_for_webhook_and_telegram(monkeypatch):
         object.__setattr__(settings, "notify_webhook_url", original[0])
         object.__setattr__(settings, "telegram_bot_token", original[1])
         object.__setattr__(settings, "telegram_chat_id", original[2])
+
+
+# -------------------------------------------------- SSRF guard (review) --
+
+
+def test_webhook_target_rejects_private_and_bad_schemes():
+    """The notification path must never be a vector into internal services."""
+    from bucker.core.notify import _validate_target
+
+    # scheme
+    for bad in ("file:///etc/passwd", "gopher://127.0.0.1:70/x", "ftp://x"):
+        with pytest.raises(ValueError, match="scheme"):
+            _validate_target(bad)
+    # literal private / loopback / link-local
+    for bad in ("http://127.0.0.1:8080/x", "http://10.0.0.5/x",
+                "http://192.168.1.1/x", "http://169.254.169.254/latest/meta-data/"):
+        with pytest.raises(ValueError, match="private|loopback|link-local|reserved"):
+            _validate_target(bad)
+    # public hostnames pass (DNS-resolvable only)
+    assert _validate_target("https://example.com/x") == "https://example.com/x"

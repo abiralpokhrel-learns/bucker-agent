@@ -174,7 +174,21 @@ class Settings:
     )
 
     # --- api -------------------------------------------------------------
+    #: Production mode: with BUCKER_PRODUCTION=1 the API/worker refuse to
+    #: boot with the dev-token default (enforced, not documented).
+    production: bool = field(
+        default_factory=lambda: _env("BUCKER_PRODUCTION", "0") == "1"
+    )
+    #: Full-access bearer token. NEVER leave as dev-token outside localhost.
     api_token: str = field(default_factory=lambda: _env("BUCKER_API_TOKEN", "dev-token"))
+    #: Optional read-only token (GET routes only). Empty = no read tier;
+    #: mutations always require the admin token.
+    read_token: str = field(default_factory=lambda: _env("BUCKER_READ_TOKEN", ""))
+    #: Writes to /memory and /skills (prompt supply chain) via the API.
+    #: Turn off in production; local CLI use is unaffected.
+    enable_memory_api: bool = field(
+        default_factory=lambda: _env("BUCKER_ENABLE_MEMORY_API", "1") == "1"
+    )
 
 
 settings = Settings()

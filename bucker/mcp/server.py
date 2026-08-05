@@ -91,7 +91,7 @@ def build_server():
         sandbox. Returns the task id; poll get_task for the verdict.
         """
         async def _run(pool, store):
-            task_id, workflow_id = await create_task(
+            task_id, workflow_id, schedule_error = await create_task(
                 store,
                 pool,
                 objective=objective,
@@ -101,6 +101,12 @@ def build_server():
                 max_retries=max_retries,
                 adaptive=adaptive,
             )
+            if workflow_id is None:
+                return (
+                    f"task {task_id} registered but NOT scheduled — "
+                    f"Temporal unreachable ({schedule_error}). "
+                    f"Run `bucker reconcile` once Temporal is back."
+                )
             return (
                 f"task {task_id} created"
                 + (f", workflow {workflow_id}" if workflow_id else

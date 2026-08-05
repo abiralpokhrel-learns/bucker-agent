@@ -157,7 +157,7 @@ def test_activity_return_annotations_match_tuple_returns():
         # With `from __future__ import annotations` the raw signature shows
         # a string — resolve it to the real type.
         annotation = typing.get_type_hints(fn).get("return")
-        assert annotation == tuple[dict, float], (
-            f"{fn.__name__} must annotate -> tuple[dict, float] so Temporal "
-            f"can decode the (dict, cost) result"
+        assert annotation == tuple[dict, float, bool], (
+            f"{fn.__name__} must annotate -> tuple[dict, float, bool] so Temporal "
+            f"can decode the (dict, cost, cost_unknown) result"
         )

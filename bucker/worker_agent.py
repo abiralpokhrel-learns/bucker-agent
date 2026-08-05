@@ -88,6 +88,20 @@ class WorkOutcome:
     def cost_usd(self) -> float:
         return round(sum(a.cost_usd for a in self.attempts), 6)
 
+    @property
+    def cost_unknown(self) -> bool:
+        """True when ANY model call's pricing metadata was missing.
+
+        The workflow turns this into a fail-closed halt when a budget is
+        set — an unknown cost cannot be proven to fit a ceiling.
+        """
+        return any(
+            a.response.cost_unknown or any(
+                c.cost_unknown for c in a.extra_calls
+            )
+            for a in self.attempts
+        )
+
 
 # ------------------------------------------------------------------ prompt --
 def _truncate(text: str, limit: int = MAX_EXCERPT_CHARS) -> str:

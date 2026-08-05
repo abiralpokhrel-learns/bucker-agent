@@ -26,7 +26,7 @@ async def record_model_call(
     task_id: UUID,
     model: str,
     latency_ms: int,
-    cost_usd: float,
+    cost_usd: float | None,   # None = unknown (pricing metadata missing)
     purpose: str | None = None,
     usage: dict | None = None,
 ) -> None:

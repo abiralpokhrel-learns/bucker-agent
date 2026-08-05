@@ -52,12 +52,43 @@ class ModelCallFailed(Exception):
 class ModelResponse:
     text: str
     model: str
-    cost_usd: float
+    cost_usd: float | None   # None = unknown (pricing metadata missing)
     latency_ms: int
     raw_ref: str                  # blob ref: the verbatim provider response
     request_ref: str              # blob ref: the verbatim request
     from_recording: bool
     usage: dict[str, Any] = field(default_factory=dict)
+    cost_unknown: bool = False
+
+
+def _redact_messages(messages: list[dict]) -> list[dict]:
+    """Deep-redact credential-shaped spans in archived prompt messages."""
+    from bucker.security.secrets import redact
+
+    out = []
+    for msg in messages:
+        if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+            out.append({**msg, "content": redact(msg["content"])[0]})
+        else:
+            out.append(msg)
+    return out
+
+
+def _redact_raw(raw: dict) -> dict:
+    """Redact credential-shaped spans in an archived raw provider response."""
+    from bucker.security.secrets import redact
+
+    out = dict(raw)
+    try:
+        for choice in out.get("choices", []) or []:
+            message = choice.get("message") or {}
+            if isinstance(message.get("content"), str):
+                message["content"] = redact(message["content"])[0]
+            if isinstance(message.get("reasoning_content"), str):
+                message["reasoning_content"] = redact(message["reasoning_content"])[0]
+    except Exception:  # noqa: BLE001 — redaction must never break storage
+        pass
+    return out
 
 
 def request_digest(
@@ -174,10 +205,13 @@ class ModelRouter:
             max_tokens = self.max_tokens_for(purpose)
 
         digest = request_digest(self.model, messages, temperature, max_tokens)
+        # Hardening review: prompts are archived for replay — redact
+        # credential-shaped spans so secrets/proprietary code the user
+        # pasted do not live verbatim in the blobstore.
         request_ref = self.blobs.put_json(
             {
                 "model": self.model,
-                "messages": messages,
+                "messages": _redact_messages(messages),
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "purpose": purpose,
@@ -221,6 +255,7 @@ class ModelRouter:
             request_ref=request_ref,
             from_recording=True,
             usage=record.get("usage", {}),
+            cost_unknown=bool(record.get("cost_unknown", False)),
         )
 
     # -------------------------------------------------------------- live --
@@ -272,7 +307,10 @@ class ModelRouter:
             latency_ms = int((time.perf_counter() - started) * 1000)
 
             raw = response.model_dump() if hasattr(response, "model_dump") else dict(response)
-            raw_ref = self.blobs.put_json(raw)
+            # Redact credential-shaped spans from the archived raw provider
+            # response (hardening review) — content can carry secrets the
+            # prompt-injection surface cares about.
+            raw_ref = self.blobs.put_json(_redact_raw(raw))
 
             text = raw["choices"][0]["message"]["content"] or ""
             usage = raw.get("usage") or {}
@@ -289,12 +327,19 @@ class ModelRouter:
                 )
                 continue
 
+            # Hardening review: never record a fabricated $0.00 for a real
+            # call. Missing pricing metadata makes the cost UNKNOWN —
+            # telemetry stores NULL and budgeted workflows fail closed.
+            cost_usd: float | None = None
+            cost_unknown = True
             try:
-                cost_usd = float(litellm.completion_cost(completion_response=response) or 0.0)
+                cost_usd = float(
+                    litellm.completion_cost(completion_response=response) or 0.0
+                )
+                cost_unknown = False
             except Exception:
-                # Never fail a task because pricing metadata was missing; a wrong
-                # cost is a telemetry problem, an exception here is an outage.
-                cost_usd = 0.0
+                # Pricing metadata missing: cost is unknown, not free.
+                cost_unknown = True
 
             self.recordings.put(
                 digest,
@@ -306,6 +351,7 @@ class ModelRouter:
                     "raw_ref": raw_ref,
                     "request_ref": request_ref,
                     "cost_usd": cost_usd,
+                    "cost_unknown": cost_unknown,
                     "latency_ms": latency_ms,
                     "usage": usage,
                 },
@@ -315,6 +361,7 @@ class ModelRouter:
                 text=text,
                 model=model,
                 cost_usd=cost_usd,
+                cost_unknown=cost_unknown,
                 latency_ms=latency_ms,
                 raw_ref=raw_ref,
                 request_ref=request_ref,

@@ -63,6 +63,70 @@ async def register_task(
     return str(task_id)
 
 
+async def start_task_workflow(
+    task_id: UUID,
+    *,
+    objective: str,
+    task_type: str = "code",
+    budget_usd: float | None = None,
+    deadline_minutes: int | None = None,
+    max_retries: int = 2,
+    adaptive: bool = False,
+    graph_spec: dict | None = None,
+) -> str:
+    """Start the Temporal workflow for an EXISTING task row.
+
+    Shared by create_task (fresh tasks) and reconcile_pending (recovery of
+    registered-but-never-scheduled tasks). Returns the workflow id.
+    Raises on failure — callers decide how to surface it.
+    """
+    from temporalio.client import Client
+
+    client = await Client.connect(
+        settings.temporal_host, namespace=settings.temporal_namespace
+    )
+    if task_type in ("demo",):
+        from bucker.workflows.task_workflow import TaskWorkflow, TaskWorkflowInput
+
+        handle = await client.start_workflow(
+            TaskWorkflow.run,
+            TaskWorkflowInput(
+                task_id=str(task_id),
+                objective=objective,
+                task_type=task_type,
+            ),
+            id=f"task-{task_id}",
+            task_queue=settings.task_queue,
+        )
+        return handle.id
+    if task_type == "graph" and graph_spec:
+        from bucker.workflows.graph_workflow import GraphInput, GraphWorkflow
+
+        handle = await client.start_workflow(
+            GraphWorkflow.run,
+            GraphInput(graph_task_id=str(task_id), spec=graph_spec),
+            id=f"task-{task_id}",
+            task_queue=settings.task_queue,
+        )
+        return handle.id
+    from bucker.workflows.code_task_workflow import CodeTaskInput, CodeTaskWorkflow
+
+    handle = await client.start_workflow(
+        CodeTaskWorkflow.run,
+        CodeTaskInput(
+            task_id=str(task_id),
+            objective=objective,
+            max_retries=max_retries,
+            budget_usd=budget_usd,
+            deadline_minutes=deadline_minutes,
+            adaptive=adaptive,
+        ),
+        id=f"task-{task_id}",
+        task_queue=settings.task_queue,
+    )
+    return handle.id
+
+
 async def create_task(
     store: EventStore,
     pool: Any,
@@ -75,12 +139,14 @@ async def create_task(
     max_retries: int = 2,
     adaptive: bool = False,
     graph_spec: dict | None = None,
-) -> tuple[str, str | None]:
+) -> tuple[str, str | None, str | None]:
     """Insert the task row, append TaskCreated, start the workflow.
 
-    Returns (task_id, workflow_id). workflow_id is None when Temporal is
-    unavailable — the task still exists, pending, and a worker picks it up
-    when Temporal returns.
+    Returns (task_id, workflow_id, schedule_error). workflow_id is None
+    when Temporal is unavailable; the failure is NOT silent — a
+    ScheduleFailed event is appended, the status flips to
+    'schedule_failed', and reconcile_pending() re-schedules it when
+    Temporal returns.
 
     task_type="graph" with graph_spec starts the multi-step DAG workflow
     (graph engineering) instead of a single-pipeline run.
@@ -94,68 +160,99 @@ async def create_task(
     )
 
     # Start a Temporal workflow if Temporal is available; otherwise the
-    # task sits pending and a worker picks it up later.
+    # task sits registered and the failure is recorded (not silent).
     workflow_id = None
-    demo_types = ("demo",)
+    schedule_error: str | None = None
     try:
-        from temporalio.client import Client
-
-        client = await Client.connect(
-            settings.temporal_host, namespace=settings.temporal_namespace
+        workflow_id = await start_task_workflow(
+            task_id,
+            objective=objective,
+            task_type=task_type,
+            budget_usd=budget_usd,
+            deadline_minutes=deadline_minutes,
+            max_retries=max_retries,
+            adaptive=adaptive,
+            graph_spec=graph_spec,
         )
-        if task_type in demo_types:
-            from bucker.workflows.task_workflow import TaskWorkflow, TaskWorkflowInput
-
-            handle = await client.start_workflow(
-                TaskWorkflow.run,
-                TaskWorkflowInput(
-                    task_id=str(task_id),
-                    objective=objective,
-                    task_type=task_type,
-                ),
-                id=f"task-{task_id}",
-                task_queue=settings.task_queue,
+    except Exception as exc:  # noqa: BLE001 — a scheduling failure is visible, not silent
+        # Hardening review: a swallowed scheduling error is a task black
+        # hole. The task row EXISTS (registered) but no workflow is
+        # running — persist the failure as an event + status so the
+        # reconciler (and the operator) can see and fix it.
+        schedule_error = f"{type(exc).__name__}: {str(exc)[:200]}"
+        await store.append(
+            task_id,
+            EventType.SCHEDULE_FAILED,
+            {"error": schedule_error},
+            idempotency_key=f"{task_id}:schedule-failed",
+        )
+        async with store._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE tasks SET status = 'schedule_failed' WHERE id = $1",
+                task_id,
             )
-        else:
-            from bucker.workflows.code_task_workflow import (
-                CodeTaskInput,
-                CodeTaskWorkflow,
+
+    return str(task_id), workflow_id, schedule_error
+
+
+async def reconcile_pending(
+    pool: Any,
+    store: EventStore,
+    *,
+    dry_run: bool = False,
+    max_age_minutes: int = 2,
+) -> dict:
+    """Re-schedule tasks whose workflow never started (hardening review).
+
+    Finds tasks in 'pending'/'schedule_failed' status that are old enough
+    to be genuine failures (not mid-registration), and attempts to start
+    their workflows. Registered-but-never-scheduled is the black-hole
+    failure mode; this is the reconciler that closes it. Existing task
+    rows are reused — no new rows, no duplicated audit trails.
+
+    Returns a report dict. With dry_run=True nothing is started.
+    """
+    from uuid import uuid4
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, task_type, objective, status, budget_usd
+            FROM tasks
+            WHERE status IN ('pending', 'schedule_failed')
+              AND created_at < NOW() - ($1 || ' minutes')::interval
+            ORDER BY created_at
+            LIMIT 100
+            """,
+            str(max_age_minutes),
+        )
+
+    report = {"found": len(rows), "scheduled": 0, "failed": [], "skipped_dry_run": []}
+    for row in rows:
+        task_id: UUID = row["id"]
+        if dry_run:
+            report["skipped_dry_run"].append(str(task_id))
+            continue
+        try:
+            await start_task_workflow(
+                task_id,
+                objective=row["objective"] or "",
+                task_type=row["task_type"] or "code",
+                budget_usd=row["budget_usd"],
             )
-
-            if task_type == "graph" and graph_spec:
-                from bucker.workflows.graph_workflow import (
-                    GraphInput,
-                    GraphWorkflow,
-                )
-
-                handle = await client.start_workflow(
-                    GraphWorkflow.run,
-                    GraphInput(
-                        graph_task_id=str(task_id),
-                        spec=graph_spec,
-                    ),
-                    id=f"task-{task_id}",
-                    task_queue=settings.task_queue,
-                )
-            else:
-                handle = await client.start_workflow(
-                    CodeTaskWorkflow.run,
-                    CodeTaskInput(
-                        task_id=str(task_id),
-                        objective=objective,
-                        max_retries=max_retries,
-                        budget_usd=budget_usd,
-                        deadline_minutes=deadline_minutes,
-                        adaptive=adaptive,
-                    ),
-                    id=f"task-{task_id}",
-                    task_queue=settings.task_queue,
-                )
-        workflow_id = handle.id
-    except Exception:
-        workflow_id = None
-
-    return str(task_id), workflow_id
+            report["scheduled"] += 1
+        except Exception as exc:  # noqa: BLE001
+            error = f"{type(exc).__name__}: {str(exc)[:200]}"
+            report["failed"].append({"task_id": str(task_id), "error": error})
+            # Re-record with a fresh key so the retry is visible in the
+            # audit trail (the first failure's key is consumed).
+            await store.append(
+                task_id,
+                EventType.SCHEDULE_FAILED,
+                {"error": error, "reconciled": True},
+                idempotency_key=f"{task_id}:schedule-failed:{uuid4().hex[:8]}",
+            )
+    return report
 
 
 _TASK_ROW_SQL = """

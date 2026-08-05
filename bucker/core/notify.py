@@ -78,6 +78,46 @@ def _payload_for(message: str) -> dict:
     }
 
 
+def _validate_target(url: str) -> str:
+    """SSRF guard (hardening review): only https/http to a PUBLIC host.
+
+    Raises ValueError for anything else — the notification path must
+    never be a vector into internal services.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("https", "http"):
+        raise ValueError(f"unsupported scheme {parsed.scheme!r} (https/http only)")
+    host = parsed.hostname or ""
+    if not host:
+        raise ValueError("missing hostname")
+
+    # Literal private/loopback/link-local addresses are refused outright.
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        addr = None
+    if addr is not None:
+        if addr.is_private or addr.is_loopback or addr.is_link_local \
+                or addr.is_reserved or addr.is_multicast:
+            raise ValueError(f"refusing to deliver to private address {host}")
+        return url
+
+    # Hostname: resolve and re-check (bounded; refusal beats a hang).
+    try:
+        resolved = socket.gethostbyname(host)
+        addr = ipaddress.ip_address(resolved)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"cannot resolve {host}") from exc
+    if addr.is_private or addr.is_loopback or addr.is_link_local \
+            or addr.is_reserved or addr.is_multicast:
+        raise ValueError(f"refusing to deliver to {host} ({resolved} resolves private)")
+    return url
+
+
 async def deliver(message: str) -> dict[str, Any]:
     """Send one message. Never raises; returns what happened."""
     from bucker.config import settings
@@ -91,6 +131,7 @@ async def deliver(message: str) -> dict[str, Any]:
     try:
         from urllib.parse import urlparse
 
+        _validate_target(payload["url"])  # SSRF guard — raise before connecting
         parsed = urlparse(payload["url"])
         path = parsed.path or "/"
         reader, writer = await asyncio.wait_for(

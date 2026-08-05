@@ -39,11 +39,14 @@ def workspace_for(task_id: str) -> Path:
 # ----------------------------------------------------------------- worker ---
 @activity.defn
 async def run_worker(task_id: str, task_dict: dict, attempt: int,
-                     model: str | None = None) -> tuple[dict, float]:
+                     model: str | None = None) -> tuple[dict, float, bool]:
     """Execute one attempt at the task. The result is NOT trusted here.
 
     ``model`` lets adaptive planning (step 34) switch models between attempts;
     None means the configured default (settings.model).
+
+    Returns (result_dict, cost_usd, cost_unknown): the third element signals
+    missing pricing metadata so budgeted workflows fail closed.
     """
     store = await get_store()
     tid = UUID(task_id)
@@ -177,10 +180,12 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int,
             tool_output_ref=result_ref,
             idempotency_key=f"{task_id}:work-{attempt}-completed",
         )
-        # (result_dict, cost_usd): the cost rides along in-band so the
-        # workflow can enforce the budget — the WorkerResult dict itself must
-        # stay byte-pure (the verifier reconstructs it with extra="forbid").
-        return outcome.result.model_dump(), outcome.cost_usd
+        # (result_dict, cost_usd, cost_unknown): the cost rides along in-band
+        # so the workflow can enforce the budget — the WorkerResult dict itself
+        # must stay byte-pure (the verifier reconstructs it with
+        # extra="forbid"). Unknown cost (missing pricing metadata) is signaled
+        # so budgeted workflows fail closed.
+        return outcome.result.model_dump(), outcome.cost_usd, outcome.cost_unknown
     finally:
         await sandbox.stop()
 

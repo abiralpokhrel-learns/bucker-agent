@@ -576,8 +576,13 @@ def test_rerun_creates_a_new_task_with_same_objective(monkeypatch):
             assert resp.status_code == 200
             data = resp.json()
             assert data["task_id"] != data["original_task_id"]
-            assert data["status"] == "pending"
-            assert data["workflow_id"] is None  # Temporal down: registered, not scheduled
+            # Honest visibility (hardening review): the task is registered
+            # but NOT scheduled, and the API says so instead of a silent
+            # workflow_id=None that looks like success.
+            assert data["status"] == "schedule_failed"
+            assert data["scheduled"] is False
+            assert data["schedule_error"]
+            assert data["workflow_id"] is None
     finally:
         _clear_fakes()
 

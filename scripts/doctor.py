@@ -169,6 +169,23 @@ def check_config() -> None:
         report("WARN", "BUCKER_API_TOKEN is the dev default ('dev-token')",
                "set a real token before exposing the API beyond localhost")
 
+    # Hardening review #10: the uv venv trap. A uv-managed interpreter in
+    # AppData\\Roaming\\uv\\python gets ACL-locked on Windows and the venv
+    # trampoline cannot spawn it; the fix is a per-user interpreter + this
+    # env var pointing at Local. Diagnose the failure mode directly.
+    import os
+
+    uv_install = os.environ.get("UV_PYTHON_INSTALL_DIR", "")
+    if not uv_install:
+        report("WARN", "UV_PYTHON_INSTALL_DIR is not set",
+               "set it to your LOCAL uv python dir (e.g. "
+               "%LOCALAPPDATA%\\uv\\python); the Roaming default gets "
+               "ACL-locked and `uv run` breaks with os error 5")
+    elif "Roaming" in uv_install:
+        report("WARN", "UV_PYTHON_INSTALL_DIR points at Roaming",
+               f"({uv_install}) — this is the ACL-locked path that breaks "
+               "uv's venv trampoline; move to %LOCALAPPDATA%\\uv\\python")
+
 
 def check_docker() -> None:
     info = _run(["docker", "info"], timeout=20)

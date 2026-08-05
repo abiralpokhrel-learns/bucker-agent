@@ -65,6 +65,7 @@ class CodeTaskWorkflow:
         self._phase = "created"
         self._attempt = 0
         self._cost_usd = 0.0
+        self._cost_unknown = False
         self._step_estimate = 0.02  # set from input in run()
         # Adaptive-planning history. Model entries are "" until a switch
         # happens — "" resolves to the configured default in the activity.
@@ -114,6 +115,7 @@ class CodeTaskWorkflow:
         return pre_spend_decision(
             self._cost_usd, budget, elapsed_minutes, deadline, attempt,
             next_step_estimate=self._step_estimate,
+            cost_unknown=self._cost_unknown,
         )
 
     async def _halt(self, task_id: str, decision: dict, attempt: int) -> dict:
@@ -151,10 +153,11 @@ class CodeTaskWorkflow:
 
         # --- plan --------------------------------------------------------
         self._phase = "planning"
-        task_dict, plan_cost = await workflow.execute_activity(
+        task_dict, plan_cost, plan_unknown = await workflow.execute_activity(
             plan_task, args=[inp.task_id, inp.objective], **self._opts(5)
         )
         self._cost_usd += float(plan_cost or 0.0)
+        self._cost_unknown = self._cost_unknown or bool(plan_unknown)
 
         budget = inp.budget_usd or task_dict.get("budget_usd")
         deadline = inp.deadline_minutes or task_dict.get("deadline_minutes")
@@ -173,12 +176,13 @@ class CodeTaskWorkflow:
                 return await self._halt(inp.task_id, pre, attempt)
 
             self._phase = "working"
-            result_dict, worker_cost = await workflow.execute_activity(
+            result_dict, worker_cost, worker_unknown = await workflow.execute_activity(
                 run_worker,
                 args=[inp.task_id, task_dict, attempt, self._current_model],
                 **self._opts(15),
             )
             self._cost_usd += float(worker_cost or 0.0)
+            self._cost_unknown = self._cost_unknown or bool(worker_unknown)
 
             self._phase = "verifying"
             last_verdict = await workflow.execute_activity(

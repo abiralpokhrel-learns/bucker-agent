@@ -95,6 +95,7 @@ def pre_spend_decision(
     attempt: int,
     *,
     next_step_estimate: float = 0.0,
+    cost_unknown: bool = False,
 ) -> dict | None:
     """Pure guard: the decision to halt BEFORE the next model spend.
 
@@ -113,9 +114,24 @@ def pre_spend_decision(
     enough that the overrun is bounded by one call's cost. Pass 0.0 to
     check only what has already been spent.
 
+    ``cost_unknown`` (hardening review): when a model call's pricing
+    metadata failed, the true cost is unknown. With a budget set we cannot
+    prove we are under it — fail CLOSED. Without a budget there is nothing
+    to protect, so unknown cost alone does not halt.
+
     The decision dict matches what ``evaluate_policy`` returns for a HALT,
     so the workflow can hand it straight to ``record_decision``.
     """
+    if cost_unknown and budget_usd is not None:
+        return {
+            "action": "halt",
+            "reason": (
+                f"cost unknown before attempt {attempt}: pricing metadata "
+                "missing for a model call — cannot prove we are under the "
+                f"${budget_usd:.4f} budget, halting (fail closed)"
+            ),
+            "failure_context": "",
+        }
     if budget_usd is not None and cost_so_far + next_step_estimate > budget_usd:
         return {
             "action": "halt",

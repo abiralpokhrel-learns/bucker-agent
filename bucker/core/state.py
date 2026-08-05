@@ -194,6 +194,16 @@ def _human_rejected(s: State, e: Event) -> None:
     s["review_note"] = e.payload.get("note", "")
 
 
+def _schedule_failed(s: State, e: Event) -> None:
+    """Scheduling failure: registered but never ran (hardening review).
+
+    Marked terminal-ish so dashboards/lists do not show a live task that
+    is actually a black hole; the reconciler re-schedules it.
+    """
+    s["status"] = "schedule_failed"
+    s["schedule_error"] = e.payload.get("error", "unknown")[:400]
+
+
 HANDLERS: dict[str, Handler] = {
     EventType.TASK_CREATED: _task_created,
     EventType.TASK_STARTED: _task_started,
@@ -211,6 +221,7 @@ HANDLERS: dict[str, Handler] = {
     EventType.GRAPH_STEP_COMPLETED: _graph_step_completed,
     EventType.HUMAN_APPROVED: _human_approved,
     EventType.HUMAN_REJECTED: _human_rejected,
+    EventType.SCHEDULE_FAILED: _schedule_failed,
     EventType.WORKER_COMPLETED: _worker_completed,
     EventType.VERIFICATION_REQUESTED: _verification_requested,
     EventType.VERIFICATION_PASSED: _verification_passed,

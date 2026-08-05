@@ -43,6 +43,9 @@ log = logging.getLogger("bucker.worker")
 
 
 async def main() -> None:
+    from bucker.security.bootstrap import assert_safe_boot
+
+    assert_safe_boot(component="worker")
     client = await Client.connect(
         settings.temporal_host, namespace=settings.temporal_namespace
     )

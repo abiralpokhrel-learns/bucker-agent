@@ -50,6 +50,9 @@ class EventType(StrEnum):
     # Payload: note, reviewer.
     HUMAN_APPROVED = "HumanApproved"
     HUMAN_REJECTED = "HumanRejected"
+    # Scheduling failure (hardening review): the task row was registered
+    # but the Temporal workflow could not be started. Payload: error.
+    SCHEDULE_FAILED = "ScheduleFailed"
     MODEL_CALL_FAILED = "ModelCallFailed"
     WORKER_COMPLETED = "WorkerCompleted"
 

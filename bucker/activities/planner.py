@@ -19,7 +19,7 @@ from bucker.router.client import ModelRouter
 
 
 @activity.defn
-async def plan_task(task_id: str, objective: str) -> tuple[dict, float]:
+async def plan_task(task_id: str, objective: str) -> tuple[dict, float, bool]:
     """Generate a validated Task contract and record everything that happened.
 
     Every attempt lands in the event log — the failures especially. A rising
@@ -107,6 +107,9 @@ async def plan_task(task_id: str, objective: str) -> tuple[dict, float]:
         idempotency_key=f"{task_id}:plan-generated",
     )
 
-    # (task_dict, cost_usd): cost rides along in-band so the workflow can
-    # enforce the budget; the contract dict stays byte-pure for the verifier.
-    return result.task.model_dump(), result.cost_usd
+    # (task_dict, cost_usd, cost_unknown): cost rides along in-band so the
+    # workflow can enforce the budget; unknown cost (missing pricing
+    # metadata) is signaled so budgeted workflows fail closed.
+    return result.task.model_dump(), result.cost_usd, any(
+        a.response.cost_unknown for a in result.attempts
+    )

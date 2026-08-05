@@ -39,7 +39,12 @@ from uuid import UUID
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_404_NOT_FOUND, HTTP_409_CONFLICT
+from starlette.status import (
+    HTTP_401_UNAUTHORIZED,
+    HTTP_403_FORBIDDEN,
+    HTTP_404_NOT_FOUND,
+    HTTP_409_CONFLICT,
+)
 
 from bucker.api.dashboard import (
     render_index,
@@ -147,17 +152,30 @@ async def _dev_token_host_guard(request, call_next):
     return await call_next(request)
 
 
-def _check_auth(creds: HTTPAuthorizationCredentials | None):
-    """Bearer-token guard. Dev-token in default config so quickstart just works."""
-    if settings.api_token == "dev-token":
-        return  # no auth in dev mode (localhost-only; see the host guard)
+def _check_auth(creds: HTTPAuthorizationCredentials | None, *, write: bool = False):
+    """Bearer-token guard with an optional read-only tier.
 
-    if creds is None or creds.credentials != settings.api_token:
+    - Production mode (BUCKER_PRODUCTION=1): the boot guard guarantees the
+      admin token is NOT the dev default; this enforces it per request.
+    - Dev mode (default): dev-token means no auth (localhost-only via the
+      host guard — acceptable for a local quickstart, never beyond).
+    - With BUCKER_READ_TOKEN set, GET routes accept it; every write route
+      (write=True) requires the admin token.
+    """
+    if settings.api_token != "dev-token":
+        token = creds.credentials if creds else ""
+        if token == settings.api_token:
+            return
+        if (not write) and settings.read_token and token == settings.read_token:
+            return
         raise HTTPException(
             status_code=HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing bearer token",
+            detail="Invalid or missing bearer token"
+            + (" (write access requires the admin token)" if write else ""),
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # Dev mode: dev-token default → no auth (localhost-only; host guard).
+    return
 
 
 # --------------------------------------------------------------- lifespan --
@@ -165,6 +183,9 @@ def _check_auth(creds: HTTPAuthorizationCredentials | None):
 
 @app.on_event("startup")
 async def _startup():
+    from bucker.security.bootstrap import assert_safe_boot
+
+    assert_safe_boot(component="api")
     global _pool
     if settings.api_token == "dev-token":
         # Loud, not silent: the dev-token bypass is a convenience, and a
@@ -238,7 +259,7 @@ async def _spawn_task(
     """
     from bucker.core.tasks import create_task
 
-    return await create_task(
+    task_id, workflow_id, schedule_error = await create_task(
         _get_store(),
         _get_pool(),
         objective=objective,
@@ -249,6 +270,7 @@ async def _spawn_task(
         max_retries=max_retries,
         adaptive=adaptive,
     )
+    return task_id, workflow_id, schedule_error
 
 
 # ------------------------------------------------------------ POST /tasks ---
@@ -277,9 +299,9 @@ async def create_task(
     ),
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
-    _check_auth(creds)
+    _check_auth(creds, write=True)
 
-    task_id, workflow_id = await _spawn_task(
+    task_id, workflow_id, schedule_error = await _spawn_task(
         objective,
         task_type,
         verifier=verifier,
@@ -292,7 +314,9 @@ async def create_task(
     return {
         "task_id": task_id,
         "workflow_id": workflow_id,
-        "status": "pending",
+        "scheduled": workflow_id is not None,
+        "schedule_error": schedule_error,
+        "status": "pending" if workflow_id else "schedule_failed",
         "objective": objective,
         "task_type": task_type,
     }
@@ -470,7 +494,7 @@ async def rerun_task(
     never mutated; a re-run is a new task that happens to share the
     objective, type and budget. The workflow decides everything else again.
     """
-    _check_auth(creds)
+    _check_auth(creds, write=True)
 
     async with _get_pool().acquire() as conn:
         row = await conn.fetchrow(
@@ -480,7 +504,7 @@ async def rerun_task(
     if row is None:
         raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="task not found")
 
-    new_id, workflow_id = await _spawn_task(
+    new_id, workflow_id, schedule_error = await _spawn_task(
         row["objective"],
         row["task_type"],
         budget_usd=row["budget_usd"],
@@ -490,7 +514,9 @@ async def rerun_task(
         "task_id": new_id,
         "original_task_id": str(task_id),
         "workflow_id": workflow_id,
-        "status": "pending",
+        "scheduled": workflow_id is not None,
+        "schedule_error": schedule_error,
+        "status": "pending" if workflow_id else "schedule_failed",
     }
 
 
@@ -508,7 +534,7 @@ async def cancel_task(
     here — the workflow's termination is the source of truth, and the event
     stream stays append-only.
     """
-    _check_auth(creds)
+    _check_auth(creds, write=True)
 
     try:
         from temporalio.client import Client
@@ -719,7 +745,7 @@ async def create_schedule_endpoint(
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """Create (or update) a recurring verified task on a cron schedule."""
-    _check_auth(creds)
+    _check_auth(creds, write=True)
     from bucker.core.schedules import ScheduleSpec, create_schedule
     from bucker.templates import UnknownTemplateError
 
@@ -765,7 +791,7 @@ async def delete_schedule_endpoint(
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """Delete a schedule. 404 when it did not exist."""
-    _check_auth(creds)
+    _check_auth(creds, write=True)
     from bucker.core.schedules import delete_schedule
 
     try:
@@ -881,7 +907,12 @@ async def create_skill(
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """Create a skill (procedural memory)."""
-    _check_auth(creds)
+    _check_auth(creds, write=True)
+    if not settings.enable_memory_api:
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN,
+            detail="memory/skills API is disabled (BUCKER_ENABLE_MEMORY_API=0)",
+        )
     from bucker.memory.skills import SkillStore
 
     try:
@@ -928,7 +959,12 @@ async def add_fact(
     source: str = Query("user", max_length=100),
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
-    _check_auth(creds)
+    _check_auth(creds, write=True)
+    if not settings.enable_memory_api:
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN,
+            detail="memory/skills API is disabled (BUCKER_ENABLE_MEMORY_API=0)",
+        )
     from bucker.memory.facts import MemoryStore
 
     try:
@@ -1010,7 +1046,7 @@ async def create_graph(
     Each step is a full verified pipeline; independent steps run in
     parallel waves (Temporal child workflows).
     """
-    _check_auth(creds)
+    _check_auth(creds, write=True)
     from bucker.contracts.graph import parse_spec, topological_waves, validate_graph
 
     try:
@@ -1029,18 +1065,18 @@ async def create_graph(
     from bucker.core.tasks import create_task
 
     store = _get_store()
-    task_id, workflow_id = await create_task(
+    task_id, workflow_id, schedule_error = await create_task(
         store,
         store._pool,
         objective=f"graph: {parsed.name} ({len(parsed.steps)} steps)",
-        task_type="graph",
         verifier="noop",
         graph_spec=spec,
     )
     if workflow_id is None:
         raise HTTPException(
             status_code=503,
-            detail="Temporal unreachable — graph registered but not scheduled",
+            detail="Temporal unreachable — graph registered but not "
+                   f"scheduled ({schedule_error})",
         )
     return {
         "task_id": task_id,
@@ -1063,7 +1099,7 @@ async def approve_task(
     The machine's verifier never passed, so the human is the judge. The
     verdict is append-only; the task becomes 'human_approved'.
     """
-    _check_auth(creds)
+    _check_auth(creds, write=True)
     if _degraded:
         raise HTTPException(status_code=503, detail="database unavailable")
     from bucker.core.tasks import review_task
@@ -1083,7 +1119,7 @@ async def reject_task(
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """Human rejects an escalated task (append-only, terminal)."""
-    _check_auth(creds)
+    _check_auth(creds, write=True)
     if _degraded:
         raise HTTPException(status_code=503, detail="database unavailable")
     from bucker.core.tasks import review_task

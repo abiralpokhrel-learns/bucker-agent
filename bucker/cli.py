@@ -46,6 +46,33 @@ async def cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_reconcile(args: argparse.Namespace) -> int:
+    """Re-schedule registered tasks whose workflow never started."""
+    from bucker.core.eventstore import EventStore, create_pool
+    from bucker.core.tasks import reconcile_pending
+
+    pool = await create_pool(settings.database_url)
+    try:
+        report = await reconcile_pending(
+            pool, EventStore(pool),
+            dry_run=args.dry_run,
+            max_age_minutes=args.max_age_minutes,
+        )
+    finally:
+        await pool.close()
+    print(f"found {report['found']} unscheduled task(s) "
+          f"({args.max_age_minutes}+ min old)")
+    if args.dry_run:
+        for tid in report["skipped_dry_run"]:
+            print(f"  would re-schedule {tid[:8]}")
+        print("dry run — nothing started")
+        return 0
+    print(f"scheduled {report['scheduled']}")
+    for failure in report["failed"]:
+        print(f"  FAILED {failure['task_id'][:8]}: {failure['error'][:120]}")
+    return 0 if not report["failed"] else 1
+
+
 async def cmd_start(args: argparse.Namespace) -> int:
     task_id = uuid4()
 
@@ -601,7 +628,7 @@ async def cmd_graph_run(args: argparse.Namespace) -> int:
     pool = await create_pool(settings.database_url)
     try:
         store = EventStore(pool)
-        task_id, workflow_id = await create_task(
+        task_id, workflow_id, schedule_error = await create_task(
             store,
             pool,
             objective=f"graph: {spec.name} ({len(spec.steps)} steps)",
@@ -609,6 +636,9 @@ async def cmd_graph_run(args: argparse.Namespace) -> int:
             verifier="noop",
             graph_spec=spec_data,
         )
+        if workflow_id is None:
+            print(f"registered but NOT scheduled: {schedule_error}", file=sys.stderr)
+            return 1
     finally:
         await pool.close()
 
@@ -642,6 +672,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="superuser DSN (migrations need DDL rights)",
     )
     m.set_defaults(func=cmd_migrate)
+
+    rec = sub.add_parser("reconcile", help="re-schedule tasks whose workflow never started")
+    rec.add_argument("--dry-run", action="store_true", help="report only, start nothing")
+    rec.add_argument("--max-age-minutes", type=int, default=2,
+                     help="only tasks older than this (default 2)")
+    rec.set_defaults(func=cmd_reconcile)
 
     s = sub.add_parser("start", help="create a task and start its workflow")
     s.add_argument("--objective", default="demo task")

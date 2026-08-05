@@ -68,6 +68,18 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `<your-org>` placeholder URLs replaced (TODO'd pre-publish slugs);
   M1 crash-resume gate re-run live (exit 0).
 
+- **Hardening review — enforced behavior, not documentation**:
+  production mode refuses to boot with the dev-token default (API +
+  worker, exit 2); scheduling failures are visible (ScheduleFailed event,
+  `schedule_failed` status, error in the API response) with a
+  `bucker reconcile` re-scheduler; read-only token tier with admin-only
+  mutations; memory/skills API writes gated; unknown model cost is NULL
+  in telemetry and halts budgeted workflows (fail closed); archived
+  prompts/provider responses redacted for credentials; webhook delivery
+  refuses private/SSRF targets; migration-upgrade tests against real
+  Postgres; `scripts/restore_drill.py` (PASSED live, 947 rows);
+  doctor diagnoses the uv Python-install trap.
+
 - **Model fallback chain** — `BUCKER_MODEL_FALLBACKS` (comma-separated) is
   tried in order when the primary model fails (provider down, key rejected,
   quota exhausted). Recordings keep both the configured primary and the
