@@ -1,7 +1,13 @@
 # --- secrets ---------------------------------------------------------------
 .env
+.env.local
+.env.*
+!.env.example
 *.pem
 *.key
+
+# --- backups (full DB dumps + blobstore archives — NEVER publish these) ---
+backups/
 
 # --- runtime state ---------------------------------------------------------
 blobstore/
