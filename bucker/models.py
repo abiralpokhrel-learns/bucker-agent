@@ -39,10 +39,11 @@ class CatalogModel:
     name: str                   # human name, e.g. "Qwen 2.5 Coder 7B"
     context: int                # context window in tokens
     notes: str = ""             # one-line honest note
+    daily_limit: int | None = None  # documented free-tier daily cap (free only)
 
 
 def _m(*, provider: str, tier: str, name: str, context: int,
-       model_id: str, notes: str = "") -> CatalogModel:
+       model_id: str, notes: str = "", daily_limit: int | None = None) -> CatalogModel:
     return CatalogModel(
         id=f"{provider}/{model_id}",
         provider=provider,
@@ -50,6 +51,7 @@ def _m(*, provider: str, tier: str, name: str, context: int,
         name=name,
         context=context,
         notes=notes,
+        daily_limit=daily_limit,
     )
 
 
@@ -71,19 +73,24 @@ CATALOG: tuple[CatalogModel, ...] = (
     # ------------------------------------------------------------- free (OpenRouter)
     _m(provider="openrouter", tier="free", name="Nemotron 3 Super 120B (free)",
        context=131_072, model_id="nvidia/nemotron-3-super-120b-a12b:free",
-       notes="current best free hosted coder; 0.0 per 1M tokens"),
+       notes="current best free hosted coder; 0.0 per 1M tokens",
+       daily_limit=50),
     _m(provider="openrouter", tier="free", name="DeepSeek V3 (free)",
        context=131_072, model_id="deepseek/deepseek-v3:free",
-       notes="free tier of DeepSeek V3 when available"),
+       notes="free tier of DeepSeek V3 when available",
+       daily_limit=50),
     _m(provider="openrouter", tier="free", name="Llama 3.3 70B (free)",
        context=131_072, model_id="meta-llama/llama-3.3-70b-instruct:free",
-       notes="free tier of the 70B instruct model"),
+       notes="free tier of the 70B instruct model",
+       daily_limit=50),
     _m(provider="openrouter", tier="free", name="Qwen 2.5 72B (free)",
        context=131_072, model_id="qwen/qwen-2.5-72b-instruct:free",
-       notes="free tier of the 72B instruct model"),
+       notes="free tier of the 72B instruct model",
+       daily_limit=50),
     _m(provider="openrouter", tier="free", name="Gemini 2.5 Flash (free)",
        context=1_000_000, model_id="google/gemini-2.5-flash:free",
-       notes="free tier of Gemini 2.5 Flash; subject to availability"),
+       notes="free tier of Gemini 2.5 Flash; subject to availability",
+       daily_limit=50),
     # ------------------------------------------------------------- paid (DeepSeek)
     _m(provider="deepseek", tier="paid", name="DeepSeek V4 Flash",
        context=128_000, model_id="deepseek-v4-flash",
@@ -146,6 +153,31 @@ def tier_of(model_id: str) -> str:
 
 def provider_of(model_id: str) -> str:
     return model_id.split("/", 1)[0] if "/" in model_id else "unknown"
+
+
+def free_tier_rows(today_counts: dict[str, int]) -> list[dict]:
+    """The free-tier quota panel (OmniRoute-style, honest).
+
+    Pure: given {model_id: calls_today} from telemetry, compute per free
+    model the documented daily limit and the remaining estimate. Only
+    catalogued free models with a documented limit are shown — an
+    unknown free model has no claim we can make about its quota.
+    """
+    rows = []
+    for m in CATALOG:
+        if m.tier != "free" or not m.daily_limit:
+            continue
+        calls = int(today_counts.get(m.id, 0))
+        rows.append({
+            "model": m.id,
+            "name": m.name,
+            "calls_today": calls,
+            "limit": m.daily_limit,
+            "remaining": max(m.daily_limit - calls, 0),
+            "pct": min(calls / m.daily_limit * 100, 100.0),
+        })
+    rows.sort(key=lambda r: -r["calls_today"])
+    return rows
 
 
 def list_by_tier(tier: str) -> list[CatalogModel]:

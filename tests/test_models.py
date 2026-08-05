@@ -49,6 +49,51 @@ def test_catalog_covers_all_three_tiers():
     assert {m.tier for m in CATALOG} == {"local", "free", "paid"}
 
 
+def test_free_models_have_documented_daily_limits():
+    for m in CATALOG:
+        if m.tier == "free":
+            assert m.daily_limit and m.daily_limit > 0, m.id
+        else:
+            assert m.daily_limit is None, m.id
+
+
+def test_free_tier_rows_compute_remaining():
+    from bucker.models import free_tier_rows
+
+    rows = free_tier_rows({
+        "openrouter/nvidia/nemotron-3-super-120b-a12b:free": 47,
+    })
+    nemotron = next(r for r in rows
+                    if r["model"] == "openrouter/nvidia/nemotron-3-super-120b-a12b:free")
+    assert nemotron["limit"] == 50
+    assert nemotron["calls_today"] == 47
+    assert nemotron["remaining"] == 3
+    assert nemotron["pct"] == 94.0
+
+
+def test_free_tier_rows_never_go_negative():
+    from bucker.models import free_tier_rows
+
+    rows = free_tier_rows({
+        "openrouter/nvidia/nemotron-3-super-120b-a12b:free": 200,
+    })
+    assert rows[0]["remaining"] == 0
+    assert rows[0]["pct"] == 100.0
+
+
+def test_free_tier_rows_only_cover_catalogued_free_models():
+    from bucker.models import CATALOG, free_tier_rows
+
+    rows = free_tier_rows({"ollama/qwen2.5-coder:7b": 999, "some/unknown": 5})
+    # Every row is a catalogued FREE model; paid/local/unknown counts in the
+    # input never create rows.
+    assert rows
+    known_free = {m.id for m in CATALOG if m.tier == "free"}
+    assert {r["model"] for r in rows} == known_free
+    # The unknown + local models contributed nothing.
+    assert all(r["calls_today"] == 0 for r in rows)
+
+
 def test_tier_of_known_and_unknown():
     assert tier_of("ollama/qwen2.5-coder:7b") == "local"
     assert tier_of("openrouter/nvidia/nemotron-3-super-120b-a12b:free") == "free"

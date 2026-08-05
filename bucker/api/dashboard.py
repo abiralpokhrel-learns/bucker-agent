@@ -159,6 +159,8 @@ pre { background: var(--panel2); border: 1px solid var(--border);
 .tmpl span { font-size: 12px; color: var(--muted); line-height: 1.4; }
 .tmpl code { font-size: 11px; color: #7ee0a3; }
 tr.cfg td { background: rgba(126,224,163,.06); }
+.meter { width: 120px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.08); margin-left: 8px; }
+.meter .fill { height: 100%; border-radius: 3px; background: #7ee0a3; }
 /* empty state */
 .cta { text-align: center; padding: 34px 20px; }
 .cta .big { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
@@ -818,6 +820,26 @@ def render_usage_page(usage: dict) -> str:
     week_cost = usage.get("week_cost", 0)
 
     model_rows = usage.get("by_model", []) or []
+    free_tier = usage.get("free_tier", []) or []
+    free_calls_today = usage.get("free_calls_today", 0)
+
+    free_panel = ""
+    if free_tier:
+        free_rows = "".join(
+            f'<div class="status-row"><span class="label mono">{_esc(r["name"])}</span>'
+            f'<span class="detail">{r["calls_today"]} / {r["limit"]} today</span>'
+            f'<span class="detail muted">{max(r["remaining"], 0)} left'
+            f' (documented cap)</span>'
+            f'<div class="meter"><div class="fill" style="width:{r["pct"]:.0f}%"></div></div>'
+            f"</div>"
+            for r in free_tier
+        )
+        free_panel = f"""
+<div class="panel">
+  <h2>Free tier today <span class="hint">{_esc(str(free_calls_today))} calls · documented caps</span></h2>
+  {free_rows}
+</div>
+"""
     model_table = "".join(
         f"<tr>"
         f'<td class="mono">{_esc(m["model"])}</td>'
@@ -866,6 +888,8 @@ def render_usage_page(usage: dict) -> str:
   <div class="card"><div class="k">Total cost</div><div class="v small">{_money(total_cost)}</div></div>
   <div class="card"><div class="k">Tokens · last 7 days</div><div class="v small">{_fmt_tokens(week_tokens)} <span class="muted" style="font-size:12px">· {_money(week_cost)}</span></div></div>
 </div>
+
+{free_panel}
 
 <div class="panel">
   <h2>Tokens by model <span class="hint">which API is doing the work</span></h2>

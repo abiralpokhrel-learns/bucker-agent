@@ -266,3 +266,41 @@ async def test_real_container_has_no_network(workspace):
             "python -c \"import socket; socket.create_connection(('1.1.1.1', 80), 3)\""
         )
         assert not result.ok, "sandbox reached the network — containment is broken"
+
+
+# --------------------------------------------------- start-retry (iter 2) --
+
+
+async def test_start_retries_transient_docker_failures(monkeypatch, tmp_path):
+    """A hiccuping `docker run` must not kill the task: bounded retry."""
+    import bucker.sandbox.runtime as rt
+
+    calls = {"n": 0}
+
+    async def flaky_run(args, timeout_s=120):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return 125, "", "daemon is warming up"  # transient
+        return 0, "ok", ""
+
+    monkeypatch.setattr(rt, "_run", flaky_run)
+    sandbox = DockerSandbox(tmp_path / "ws", image="test-image")
+    await sandbox.start()
+    assert sandbox._started is True
+    assert calls["n"] == 3, "must have retried twice then succeeded"
+
+
+async def test_start_gives_up_after_three_attempts(monkeypatch, tmp_path):
+    import bucker.sandbox.runtime as rt
+
+    calls = {"n": 0}
+
+    async def always_fail(args, timeout_s=120):
+        calls["n"] += 1
+        return 125, "", "boom"
+
+    monkeypatch.setattr(rt, "_run", always_fail)
+    sandbox = DockerSandbox(tmp_path / "ws", image="test-image")
+    with pytest.raises(SandboxError, match="after 3 attempts"):
+        await sandbox.start()
+    assert calls["n"] == 3

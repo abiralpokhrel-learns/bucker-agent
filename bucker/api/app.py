@@ -1173,6 +1173,15 @@ async def _usage_stats() -> dict:
             GROUP BY d ORDER BY d
             """
         )
+        today_rows = await conn.fetch(
+            """
+            SELECT model_used AS model, COUNT(*) AS calls
+            FROM telemetry
+            WHERE model_used IS NOT NULL
+              AND created_at >= CURRENT_DATE
+            GROUP BY model_used
+            """
+        )
 
     by_model = [
         {
@@ -1211,6 +1220,13 @@ async def _usage_stats() -> dict:
     for d in per_day:
         d["pct"] = (d["tokens"] / max_day * 100) if max_day else 0
 
+    from bucker.models import free_tier_rows
+
+    free_tier = free_tier_rows(
+        {r["model"]: int(r["calls"]) for r in today_rows}
+    )
+    total_free_calls_today = sum(r["calls_today"] for r in free_tier)
+
     return {
         "total_tokens": int(total_row["tokens"]),
         "total_cost": float(total_row["cost"]),
@@ -1220,6 +1236,8 @@ async def _usage_stats() -> dict:
         "by_model": by_model,
         "by_purpose": by_purpose,
         "per_day": per_day,
+        "free_tier": free_tier,
+        "free_calls_today": total_free_calls_today,
     }
 
 

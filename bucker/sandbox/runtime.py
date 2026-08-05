@@ -193,16 +193,30 @@ class DockerSandbox:
 
     # ---------------------------------------------------------- lifecycle --
     async def start(self) -> None:
+        """Start the container, retrying transient Docker failures.
+
+        ``docker run`` cold-starts (image pull contention, daemon warm-up)
+        fail sporadically; a task should not die to a hiccup that a
+        one-second wait fixes. Bounded: two retries, then the real error.
+        """
         args = build_run_args(
             container_name=self.container_name,
             workspace=self.workspace,
             image=self.image,
             network=self.network,
         )
-        code, out, err = await _run(args, timeout_s=120)
-        if code != 0:
-            raise SandboxError(f"failed to start container: {err.strip() or out.strip()}")
-        self._started = True
+        last_error = "container did not start"
+        for attempt in range(3):
+            code, out, err = await _run(args, timeout_s=120)
+            if code == 0:
+                self._started = True
+                return
+            last_error = f"{err.strip() or out.strip()}"
+            if attempt < 2:
+                # Bounded backoff: 1s then 3s. Never longer — the caller's
+                # activity timeout is the real ceiling.
+                await asyncio.sleep(1.0 + 2.0 * attempt)
+        raise SandboxError(f"failed to start container after 3 attempts: {last_error}")
 
     async def stop(self) -> None:
         """Always call this. A leaked container holds memory and a workspace."""
