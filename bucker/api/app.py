@@ -1049,6 +1049,53 @@ async def create_graph(
     }
 
 
+# ------------------------------------------------------- human review ----
+
+
+@app.post("/tasks/{task_id}/approve")
+async def approve_task(
+    task_id: UUID,
+    note: str = Query("", max_length=500),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Human approves an escalated (needs_human_review) task.
+
+    The machine's verifier never passed, so the human is the judge. The
+    verdict is append-only; the task becomes 'human_approved'.
+    """
+    _check_auth(creds)
+    if _degraded:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    from bucker.core.tasks import review_task
+
+    try:
+        return await review_task(_get_store(), task_id, approved=True, note=note)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/tasks/{task_id}/reject")
+async def reject_task(
+    task_id: UUID,
+    note: str = Query("", max_length=500),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Human rejects an escalated task (append-only, terminal)."""
+    _check_auth(creds)
+    if _degraded:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    from bucker.core.tasks import review_task
+
+    try:
+        return await review_task(_get_store(), task_id, approved=False, note=note)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/system")
 async def system_status_json(
     creds: HTTPAuthorizationCredentials | None = Depends(security),

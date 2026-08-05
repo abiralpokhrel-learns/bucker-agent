@@ -51,20 +51,22 @@ class FakePool:
 class FakeEventStore:
     def __init__(self):
         self._events: list = []
+        self._pool = FakePool()  # review_task reads task rows via store._pool
 
     async def read_stream(self, task_id, after_id=0, limit=None):
         return self._events
 
-    async def append(self, *args, **kwargs):
+    async def append(self, task_id=None, event_type="TaskCreated", payload=None,
+                     **kwargs):
         from datetime import datetime
 
         from bucker.core.eventstore import Event
 
         e = Event(
             id=len(self._events) + 1,
-            task_id=uuid4(),
-            event_type="TaskCreated",
-            payload={},
+            task_id=task_id or uuid4(),
+            event_type=event_type,
+            payload=payload or {},
             schema_version=1,
             created_at=datetime.now(UTC),
         )
@@ -316,6 +318,113 @@ class FakeUsageConn(FakeConn):
 
     async def fetch(self, sql, *args):
         return []
+
+
+class FakeReviewConn(FakeConn):
+    """A connection whose task lookup returns an escalated task row."""
+
+    def __init__(self, status: str = "needs_human_review"):
+        self._status = status
+
+    async def fetchrow(self, sql, *args):
+        from datetime import UTC, datetime
+
+        return {
+            "id": "11111111-2222-3333-4444-555555555555",
+            "task_type": "code_change",
+            "objective": "add subtract",
+            "status": self._status,
+            "verifier": "python_test_runner",
+            "budget_usd": 0.5,
+            "cost_usd": 0.1,
+            "total_tokens": 100,
+            "event_count": 5,
+            "created_at": datetime.now(UTC),
+        }
+
+
+class FakeReviewPool(FakePool):
+    def __init__(self, status: str = "needs_human_review"):
+        self._status = status
+
+    def acquire(self):
+        return FakeReviewConn(self._status)
+
+
+# -------------------------------------------------- human review API --
+
+
+def _inject_review_fakes(monkeypatch, status="needs_human_review"):
+    import sys
+
+    import bucker.api  # noqa: F401
+
+    mod = sys.modules["bucker.api.app"]
+    monkeypatch.setattr(mod, "_pool", FakeReviewPool(status))
+    monkeypatch.setattr(mod, "_store", FakeEventStore())
+    # review_task reads task rows via store._pool — point it at the review pool.
+    mod._store._pool = FakeReviewPool(status)
+    monkeypatch.setattr(mod, "_snaps", FakeSnapshots())
+    return mod
+
+
+def test_approve_escalated_task(client, monkeypatch):
+    """Approve an escalated task: append-only review, status flips."""
+    mod = _inject_review_fakes(monkeypatch)
+
+    resp = client.post(
+        "/tasks/11111111-2222-3333-4444-555555555555/approve",
+        params={"note": "looks correct to me"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "human_approved"
+    assert data["note"] == "looks correct to me"
+
+    # The review is append-only: the fake store saw a HumanApproved event.
+    store = mod._store
+    types = [e.event_type for e in store._events]
+    assert "HumanApproved" in types
+
+
+def test_reject_escalated_task(client, monkeypatch):
+    mod = _inject_review_fakes(monkeypatch)
+
+    resp = client.post(
+        "/tasks/11111111-2222-3333-4444-555555555555/reject",
+        params={"note": "wrong approach"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "human_rejected"
+    assert "HumanRejected" in [e.event_type for e in mod._store._events]
+
+
+def test_review_rejects_non_escalated_task(client, monkeypatch):
+    """Only needs_human_review tasks can be reviewed — 409 otherwise."""
+    _inject_review_fakes(monkeypatch, status="in_progress")
+
+    resp = client.post(
+        "/tasks/11111111-2222-3333-4444-555555555555/approve"
+    )
+    assert resp.status_code == 409
+    assert "needs_human_review" in resp.json()["detail"]
+
+
+def test_review_missing_task_is_404(client, monkeypatch):
+    """Unknown task id -> 404, not a crash."""
+    import sys
+
+    import bucker.api  # noqa: F401
+
+    mod = sys.modules["bucker.api.app"]
+    monkeypatch.setattr(mod, "_pool", FakePool())
+    monkeypatch.setattr(mod, "_store", FakeEventStore())  # fetchrow -> None
+    monkeypatch.setattr(mod, "_snaps", FakeSnapshots())
+
+    resp = client.post(
+        "/tasks/11111111-2222-3333-4444-555555555555/reject"
+    )
+    assert resp.status_code == 404
 
 
 class FakeUsagePool(FakePool):

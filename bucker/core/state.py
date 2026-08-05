@@ -182,6 +182,18 @@ def _graph_step_completed(s: State, e: Event) -> None:
     })
 
 
+def _human_approved(s: State, e: Event) -> None:
+    """A human accepted the escalated result — terminal, honest status."""
+    s["status"] = "human_approved"
+    s["review_note"] = e.payload.get("note", "")
+
+
+def _human_rejected(s: State, e: Event) -> None:
+    """A human rejected the escalated result — terminal, honest status."""
+    s["status"] = "human_rejected"
+    s["review_note"] = e.payload.get("note", "")
+
+
 HANDLERS: dict[str, Handler] = {
     EventType.TASK_CREATED: _task_created,
     EventType.TASK_STARTED: _task_started,
@@ -197,6 +209,8 @@ HANDLERS: dict[str, Handler] = {
     EventType.MODEL_CALL_FAILED: _model_call_failed,
     EventType.CRITIQUE_COMPLETED: _critique_completed,
     EventType.GRAPH_STEP_COMPLETED: _graph_step_completed,
+    EventType.HUMAN_APPROVED: _human_approved,
+    EventType.HUMAN_REJECTED: _human_rejected,
     EventType.WORKER_COMPLETED: _worker_completed,
     EventType.VERIFICATION_REQUESTED: _verification_requested,
     EventType.VERIFICATION_PASSED: _verification_passed,

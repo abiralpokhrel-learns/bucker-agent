@@ -969,6 +969,17 @@ def _task_control_bar(task_id: str, status: str) -> str:
     active = status in ("pending", "in_progress")
 
     buttons = ""
+    if status == "needs_human_review":
+        # Human-in-the-loop: the verifier never passed, so the human is
+        # the judge. Approve/reject are append-only reviews.
+        buttons += (
+            '<button class="primary" onclick="reviewTask(true)" '
+            'id="approve-btn">approve</button> '
+            '<button onclick="reviewTask(false)" id="reject-btn" '
+            'style="border-color:var(--red);color:var(--red)">reject</button> '
+            '<input id="review-note" placeholder="note (why)" '
+            'style="width:220px;margin-left:6px"> '
+        )
     if terminal:
         buttons += (
             '<button class="primary" onclick="rerunTask()" id="rerun-btn">'
@@ -984,6 +995,17 @@ def _task_control_bar(task_id: str, status: str) -> str:
 
     js = f"""
 <script>
+async function reviewTask(approved) {{
+  const note = (document.getElementById('review-note') || {{}}).value || '';
+  const url = '/tasks/{_esc(task_id)}/' + (approved ? 'approve' : 'reject')
+    + (note ? '?note=' + encodeURIComponent(note) : '');
+  const resp = await fetch(url, {{ method: 'POST' }});
+  const data = await resp.json().catch(() => ({{}}));
+  document.getElementById('ctl-out').innerHTML =
+    '<div class="alert ' + (resp.ok ? 'ok' : 'err') + '">'
+    + (data.detail || data.status || resp.status) + '</div>';
+  if (resp.ok) setTimeout(() => location.reload(), 600);
+}}
 async function _post(url, btnId, done) {{
   const btn = document.getElementById(btnId);
   btn.disabled = true;

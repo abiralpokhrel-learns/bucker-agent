@@ -14,6 +14,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from bucker.config import settings
+from bucker.core.events import EventType
 from bucker.core.eventstore import EventStore
 
 
@@ -188,6 +189,49 @@ async def list_tasks(pool: Any, limit: int = 50) -> list[dict]:
             limit,
         )
     return [_row_to_task(r) for r in rows]
+
+
+# ---------------------------------------------------- human-in-the-loop ----
+
+
+async def review_task(
+    store: EventStore,
+    task_id: UUID,
+    *,
+    approved: bool,
+    note: str = "",
+) -> dict:
+    """Human review of an escalated (needs_human_review) task.
+
+    The machine's verifier never passed, so the human is the judge. The
+    verdict is recorded as an append-only event and the task status flips
+    to the honest terminal values "human_approved" / "human_rejected" —
+    deliberately distinct from the machine verdicts so the audit trail
+    can never confuse the two.
+    """
+    task = await get_task(store._pool, task_id)
+    if task is None:
+        raise KeyError(f"task {task_id} not found")
+    if task["status"] != "needs_human_review":
+        raise ValueError(
+            f"task status is {task['status']!r}; only needs_human_review "
+            f"tasks can be approved or rejected"
+        )
+
+    status = "human_approved" if approved else "human_rejected"
+    async with store._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE tasks SET status = $1 WHERE id = $2",
+            status,
+            task_id,
+        )
+    await store.append(
+        task_id,
+        EventType.HUMAN_APPROVED if approved else EventType.HUMAN_REJECTED,
+        {"note": note.strip()[:500], "reviewer": "human"},
+        idempotency_key=f"{task_id}:review-{status}",
+    )
+    return {"task_id": str(task_id), "status": status, "note": note.strip()[:500]}
 
 
 def _row_to_task(row: Any) -> dict:

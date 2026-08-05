@@ -46,6 +46,10 @@ class EventType(StrEnum):
     # Graph engineering (phase B): one step of a multi-step task DAG
     # finished. Payload: step_id, status, detail.
     GRAPH_STEP_COMPLETED = "GraphStepCompleted"
+    # Human-in-the-loop (phase C): a human reviewed an escalated task.
+    # Payload: note, reviewer.
+    HUMAN_APPROVED = "HumanApproved"
+    HUMAN_REJECTED = "HumanRejected"
     MODEL_CALL_FAILED = "ModelCallFailed"
     WORKER_COMPLETED = "WorkerCompleted"
 
