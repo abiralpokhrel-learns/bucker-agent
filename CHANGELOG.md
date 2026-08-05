@@ -81,6 +81,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Postgres; `scripts/restore_drill.py` (PASSED live, 947 rows);
   doctor diagnoses the uv Python-install trap.
 
+- **One-command setup (usability pass)** — new `bucker setup` (checks
+  prerequisites, generates `.env` + a real API token, starts Postgres,
+  migrates — one command) and `bucker dev` (starts Temporal + worker +
+  dashboard in ONE terminal; detects what is already running and skips
+  it, falls back to the Temporal docker image when the CLI is missing).
+  The old model-key wizard moved to `bucker setup-wizard`. Setup is now:
+  install Docker + uv → `uv sync` → `bucker setup` → `bucker dev`.
 - **Model fallback chain** — `BUCKER_MODEL_FALLBACKS` (comma-separated) is
   tried in order when the primary model fails (provider down, key rejected,
   quota exhausted). Recordings keep both the configured primary and the

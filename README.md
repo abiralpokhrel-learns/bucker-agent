@@ -50,29 +50,35 @@ evidence-based improvement is what the system actually *is*.
 
 ## Quickstart (5 minutes)
 
-**You need:** Python 3.12+, Docker, and the
-[Temporal CLI](https://docs.temporal.io/cli).
+**You need:** Docker (running) and [uv](https://docs.astral.sh/uv/)
+(`winget install astral-sh.uv`). That's it.
 
 ```bash
-git clone <your-repo-url> && cd bucker-agent
-cp .env.example .env
+git clone https://github.com/abiralpokhrel-learns/bucker-agent && cd bucker-agent
+uv sync
 
-docker compose up -d                 # Postgres
-temporal server start-dev            # Temporal UI at http://localhost:8233
+uv run python -m bucker.cli setup   # checks, generates .env + token, starts Postgres, migrates
+uv run python -m bucker.cli dev     # starts Temporal + worker + dashboard — ONE command
 
-uv sync --extra dev
-uv run python -m bucker.cli migrate  # apply schema + append-only grants
-
-# start the worker. BUCKER_MODEL_MODE=live makes it call the real provider;
-# without it the worker replays stored recordings (free, but fails on any
-# prompt it has never seen).
-BUCKER_MODEL_MODE=live uv run python -m bucker.worker &
-
-# create a task and watch it run
+# dashboard at http://localhost:8123 — create a task in the browser, or:
 uv run python -m bucker.cli start --objective "my first durable task" --wait
 uv run python -m bucker.cli events <task_id>   # the full audit trail
 uv run python -m bucker.cli show    <task_id>   # state, rebuilt from events
 ```
+
+The manual equivalent (if you prefer to run each piece yourself):
+
+```bash
+docker compose up -d                 # Postgres
+temporal server start-dev            # Temporal UI at http://localhost:8233
+uv run python -m bucker.cli migrate  # apply schema + append-only grants
+BUCKER_MODEL_MODE=live uv run python -m bucker.worker &
+uv run uvicorn bucker.api.app:app --port 8123
+```
+
+(BUCKER_MODEL_MODE=live makes the worker call the real provider; without
+it the worker replays stored recordings — free, but fails on any prompt it
+has never seen.)
 
 ### Windows notes (native)
 
@@ -389,8 +395,10 @@ bucker runs any model the router can reach, from three tiers:
 ```bash
 bucker models          # browse the catalog with tiers + configured markers
 bucker providers       # live status: what Ollama has pulled, key shape
-bucker setup           # wizard: proposes a free-first chain (dry run)
-bucker setup --apply   # ...and writes it into .env (other lines untouched)
+bucker setup           # one-command env bootstrap: checks, .env, database
+bucker dev             # start the whole stack (temporal + worker + dashboard)
+bucker setup-wizard    # propose a free-first model chain (dry run)
+bucker setup-wizard --apply   # ...and writes it into .env (other lines untouched)
 ```
 
 The wizard proposes a deterministic free-first chain — best local coder →

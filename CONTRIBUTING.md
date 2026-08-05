@@ -15,12 +15,10 @@ Everything else — configs, dashboards, plumbing — is fine to generate, but t
 
 ```bash
 git clone https://github.com/abiralpokhrel-learns/bucker-agent && cd bucker-agent
-cp .env.example .env
-docker compose up -d                   # Postgres
-temporal server start-dev              # UI at http://localhost:8233
-uv sync --extra dev
-uv run python -m bucker.cli migrate
-uv run python -m pytest                # all pure tests, no infra needed
+uv sync
+uv run python -m bucker.cli setup     # checks, .env, database — one command
+uv run python -m bucker.cli dev       # starts the whole stack in ONE terminal
+uv run python -m pytest               # all pure tests, no infra needed
 ```
 
 ## Running the full test suite

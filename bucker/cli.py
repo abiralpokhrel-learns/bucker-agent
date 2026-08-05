@@ -73,6 +73,24 @@ async def cmd_reconcile(args: argparse.Namespace) -> int:
     return 0 if not report["failed"] else 1
 
 
+async def cmd_setup(args: argparse.Namespace) -> int:
+    """One-command environment bootstrap (checks, fixes, .env, database)."""
+    from bucker.dev import run_setup
+
+    return await run_setup()
+
+
+async def cmd_dev(args: argparse.Namespace) -> int:
+    """Start the whole local stack in one terminal (replaces 3 terminals)."""
+    from bucker.dev import _print_plan, plan_stack, run_stack
+
+    if args.dry_run:
+        print("bucker dev --dry-run: what WOULD happen")
+        _print_plan(plan_stack())
+        return 0
+    return await run_stack(live_models=not args.no_live)
+
+
 async def cmd_start(args: argparse.Namespace) -> int:
     task_id = uuid4()
 
@@ -309,11 +327,11 @@ async def cmd_providers(args: argparse.Namespace) -> int:
         print(f"\npulled locally: {', '.join(status['ollama_models'])}")
     print("\nsuggested free-first chain: " +
           (" -> ".join(status["suggested_chain"]) if status["suggested_chain"]
-           else "(nothing detected — run `bucker setup` for guidance)"))
+           else "(nothing detected — run `bucker setup-wizard` for guidance)"))
     return 0
 
 
-async def cmd_setup(args: argparse.Namespace) -> int:
+async def cmd_setup_wizard(args: argparse.Namespace) -> int:
     """Wizard: propose a free-first chain; --apply writes it to .env."""
     from bucker.config import settings
     from bucker.providers import provider_status
@@ -679,6 +697,19 @@ def build_parser() -> argparse.ArgumentParser:
                      help="only tasks older than this (default 2)")
     rec.set_defaults(func=cmd_reconcile)
 
+    setup_p = sub.add_parser(
+        "setup", help="one-command environment bootstrap (checks, .env, database)")
+    setup_p.set_defaults(func=cmd_setup)
+
+    dev_p = sub.add_parser(
+        "dev", help="start the WHOLE local stack (temporal + worker + dashboard) "
+                    "in one terminal")
+    dev_p.add_argument("--dry-run", action="store_true",
+                       help="show what would be started, start nothing")
+    dev_p.add_argument("--no-live", action="store_true",
+                       help="run the worker in recorded mode (no real model calls)")
+    dev_p.set_defaults(func=cmd_dev)
+
     s = sub.add_parser("start", help="create a task and start its workflow")
     s.add_argument("--objective", default="demo task")
     s.add_argument("--task-type", default="demo")
@@ -751,13 +782,16 @@ def build_parser() -> argparse.ArgumentParser:
                                           "OpenRouter key shape")
     pv.set_defaults(func=cmd_providers)
 
-    su = sub.add_parser("setup", help="wizard: propose a free-first model chain "
-                                      "and (with --apply) write it to .env")
+    su = sub.add_parser(
+        "setup-wizard",
+        help="model-key wizard (the old `bucker setup`): propose a free-first "
+             "chain and (with --apply) write it to .env",
+    )
     su.add_argument("--apply", action="store_true",
                     help="write the proposal into .env (BUCKER_MODEL + "
                          "BUCKER_MODEL_FALLBACKS only; other lines untouched)")
     su.add_argument("--env", default=None, help="path to .env (default: project .env)")
-    su.set_defaults(func=cmd_setup)
+    su.set_defaults(func=cmd_setup_wizard)
 
     mem = sub.add_parser("memory", help="semantic memory: durable facts across sessions")
     mem_sub = mem.add_subparsers(dest="memory_cmd", required=True)

@@ -38,11 +38,10 @@ And if it gets stuck, it asks **you** to decide.
 
 ## Step 1 - Install
 
-You need:
+You need just TWO things:
 
 - **Docker Desktop** (running) - for the sandbox and the database
-- **Python 3.12** (installed)
-- **uv** (Python package manager)
+- **uv** (Python package manager - install with `winget install astral-sh.uv`)
 
 Then, in the project folder:
 
@@ -54,24 +53,19 @@ This installs everything. Done.
 
 ---
 
-## Step 2 - Configure
+## Step 2 - One-command setup
 
-Copy the example config to your own file:
+The setup command checks your machine, creates your private config
+file (.env) with a generated security token, starts the database, and
+gets everything ready:
 
 ```bash
-cp .env.example .env
+uv run python -m bucker.cli setup
 ```
 
-Open `.env` and add the keys you have:
-
-```
-BUCKER_API_TOKEN=make-up-a-secret-token
-DEEPSEEK_API_KEY=your-key-here
-OPENROUTER_API_KEY=your-key-here
-```
-
-No keys? No problem - the robot still works with a **free local model**
-(Ollama). Install [Ollama](https://ollama.com) and pull a model:
+That's it. If you have model API keys (DeepSeek / OpenRouter), open
+`.env` and paste them in. No keys? The robot still works with a free
+local model - install [Ollama](https://ollama.com) and run:
 
 ```bash
 ollama pull qwen2.5-coder:7b
@@ -79,42 +73,21 @@ ollama pull qwen2.5-coder:7b
 
 ---
 
-## Step 3 - Start the database
+## Step 3 - Start the whole stack with ONE command
+
+No more three terminals. One command starts everything - the manager
+(Temporal), the robot (worker), and the dashboard (website):
 
 ```bash
-docker compose up -d
-uv run python -m bucker.cli migrate
+uv run python -m bucker.cli dev
 ```
 
-That's it - your database is ready.
+It detects what is already running and only starts what is missing.
+The first time, it may start Temporal for you automatically.
 
 ---
 
-## Step 4 - Start the engine
-
-Open **three** terminal windows.
-
-**Terminal 1 - the clock** (Temporal keeps track of everything):
-
-```bash
-temporal server start-dev
-```
-
-**Terminal 2 - the worker** (this is the robot itself):
-
-```bash
-BUCKER_MODEL_MODE=live uv run python -m bucker.worker
-```
-
-**Terminal 3 - the dashboard** (this is the website):
-
-```bash
-uv run uvicorn bucker.api.app:app --port 8123
-```
-
----
-
-## Step 5 - Give it your first task
+## Step 4 - Give it your first task
 
 Open your browser:
 
@@ -147,7 +120,7 @@ You will see:
 
 ---
 
-## Step 6 - What the statuses mean
+## Step 5 - What the statuses mean
 
 | Status             | Meaning                                   |
 |--------------------|-------------------------------------------|
@@ -162,7 +135,7 @@ You will see:
 
 ---
 
-## Step 7 - When the robot asks you
+## Step 6 - When the robot asks you
 
 If a task shows **needs_human_review**, open it and click:
 
@@ -174,7 +147,7 @@ is written to an append-only log.
 
 ---
 
-## Step 8 - Useful commands
+## Step 7 - Useful commands
 
 ```bash
 # list your recent tasks
@@ -198,7 +171,7 @@ uv run python -m scripts.backup
 
 ---
 
-## Step 9 - Running bigger things
+## Step 8 - Running bigger things
 
 - **Graphs** - run several tasks in a smart order (some in parallel):
 
@@ -225,8 +198,8 @@ uv sync --extra mcp
 | Problem                          | Fix                                  |
 |----------------------------------|--------------------------------------|
 | `os error 5` when running uv     | `export UV_PYTHON_INSTALL_DIR="C:\Users\YOURNAME\AppData\Local\uv\python"` |
-| Everything returns 503           | start the database: `docker compose up -d` |
-| Task stuck in pending            | is the worker running? (Terminal 2)  |
+| Everything returns 503           | run `uv run python -m bucker.cli setup` |
+| Task stuck in pending            | is `bucker dev` still running in your terminal?  |
 | "free tier exhausted" from OpenAI| wait until midnight UTC, or add credits |
 | Need a real API token            | `openssl rand -hex 32` and put it in `.env` |
 
