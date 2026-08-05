@@ -167,7 +167,7 @@ with cost:
 
 ```bash
 curl http://localhost:8123/v1/chat/completions \
-  -H "Authorization: Bearer $BUCKER_API_TOKEN" \
+  -H "Authorization: Bearer ${BUCKER_API_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"model":"deepseek/deepseek-v4-flash",
        "messages":[{"role":"user","content":"say hi"}]}'
@@ -195,6 +195,20 @@ What the gateway does for you:
 - **Normalized errors** — provider internals never leak; callers get
   `{"error": {"message", "type", "code"}}` with a stable taxonomy
   (rate_limit, quota_exceeded, timeout, ...).
+
+**One engine for every call.** Bucker's own planner/worker/critic runs go
+through the *same* engine: `ModelRouter.complete()` (the stable internal
+API) delegates live inference to the router, so internal work gets the
+same capability filtering, policy routing, circuit breakers, and fallback
+as API calls. Recorded mode is untouched — replay stays a pure recording
+lookup.
+
+**Replay never re-decides routing.** Every live inference records a
+routing envelope (policy, registry config version, candidate models,
+selected provider/model, fallback attempts) next to the response. Replay
+returns the stored response for the same request digest — even if
+provider health has changed since. Live = intelligent routing; replay =
+historical reconstruction.
 
 Architecture: `bucker/gateway/` is a self-contained package — canonical
 request model, model registry, provider adapters (DeepSeek / OpenRouter /
@@ -524,10 +538,13 @@ bucker setup-wizard --apply   # ...and writes it into .env (other lines untouche
 ```
 
 The wizard proposes a deterministic free-first chain — best local coder →
-best free hosted → best paid — and `BUCKER_MODEL_FALLBACKS` makes the
-router fall through it when a provider fails (dead key, quota, outage).
-Replay determinism is unaffected: replays stay keyed to the primary model,
-and the router never silently reorders the chain.
+best free hosted → best paid — and `BUCKER_MODEL_FALLBACKS` feeds that
+chain into the gateway engine's default `priority` policy: when a provider
+fails (dead key, quota, outage) the engine falls through with retries,
+circuit breakers, and capability filtering on top. Adaptive retries switch
+models through the same registry — a model requirement, never a
+hardcoded list. Replay determinism is unaffected: replays stay keyed to
+the primary model and never re-decide routing.
 
 The dashboard's `/models-page` shows the whole story: tier badges,
 what's configured, provider health, and the suggested chain.
