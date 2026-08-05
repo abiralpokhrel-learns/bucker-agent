@@ -59,6 +59,14 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`CheckViolationError`). Migration tripwire tests added.
 - API tests now simulate "Temporal down" hermetically (patch
   `Client.connect`) instead of relying on ambient infra state.
+- **Review pass (readiness)**: `scripts/backup.py` (Postgres + blobstore,
+  timestamped, retention) with a validated restore drill;
+  `docs/OPERATIONS.md` (backup/restore, monitoring, log retention,
+  migration rollback policy, incident runbook, M2 procedure, pre-publish
+  checklist); doctor warns when `BUCKER_API_TOKEN` is the dev default;
+  Docker images pinned by digest (`postgres:16`, `python:3.12-slim`);
+  `<your-org>` placeholder URLs replaced (TODO'd pre-publish slugs);
+  M1 crash-resume gate re-run live (exit 0).
 
 - **Model fallback chain** — `BUCKER_MODEL_FALLBACKS` (comma-separated) is
   tried in order when the primary model fails (provider down, key rejected,

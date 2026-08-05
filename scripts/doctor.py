@@ -160,6 +160,14 @@ def check_config() -> None:
     if "loaded=False" in out:
         report("WARN", ".env missing or unreadable",
                "copy .env.example to .env and adjust")
+        return
+    # Review #4: the API auth token must not be the dev default in prod-ish
+    # setups. Local-only development is fine; say so loudly otherwise.
+    from bucker.config import settings as s
+
+    if getattr(s, "api_token", "dev-token") == "dev-token":
+        report("WARN", "BUCKER_API_TOKEN is the dev default ('dev-token')",
+               "set a real token before exposing the API beyond localhost")
 
 
 def check_docker() -> None:

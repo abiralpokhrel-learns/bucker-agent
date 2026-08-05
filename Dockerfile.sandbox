@@ -10,8 +10,10 @@
 #
 # Phase 3 note: pin by digest rather than tag before publishing benchmark
 # numbers, so a silent base-image update cannot move your results.
+# Digest pinned 2026-08-05 (python:3.12-slim). To refresh:
+#   docker pull python:3.12-slim && docker inspect --format '{{index .RepoDigests 0}}' python:3.12-slim
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
 
 # Verifier tooling. Kept minimal — every addition is more surface inside the
 # boundary, and anything not needed to *check* work does not belong here.

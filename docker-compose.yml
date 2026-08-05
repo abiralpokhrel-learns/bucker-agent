@@ -6,7 +6,9 @@
 #
 services:
   postgres:
-    image: postgres:16
+    # Pinned by digest for reproducible infrastructure. To refresh:
+    #   docker pull postgres:16 && docker inspect --format '{{index .RepoDigests 0}}' postgres:16
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
     container_name: bucker-pg
     environment:
       POSTGRES_PASSWORD: dev

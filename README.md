@@ -587,6 +587,8 @@ project's own rules before opening a PR:
 - [SECURITY.md](SECURITY.md) — trust model and how to report vulnerabilities
 - [CHANGELOG.md](CHANGELOG.md) — what changed, release by release
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — what to change before exposing it
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — backup/restore drill, monitoring,
+  log retention, migration rollback policy, incident runbook, M2 gate procedure
 
 The meta-rule is simple: **generated code is untrusted worker output, and
 the test suite is its verifier.** Nothing merges without passing, no matter
