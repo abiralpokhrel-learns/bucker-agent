@@ -6,6 +6,19 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **One-command onboarding** — `bucker dev` is now THE command: first run
+  auto-bootstraps (prereq checks → uv auto-install prompt → `.env` + token
+  → Postgres → migrations) then starts the whole stack and opens the
+  dashboard in your browser; later runs just start the stack. First-run
+  detection is real (no `.env` / DB down / unapplied migrations →
+  bootstrap). New flags: `--force-setup`, `--no-browser`; `--dry-run`
+  reports whether setup is needed. Platform launchers `start.sh` /
+  `start.bat` install uv if missing; `Makefile` (`make dev`); `.env`
+  generation and Docker prompts now offer to act (install uv / open the
+  Docker download page) instead of only printing instructions.
+
 ### Fixed
 
 - **CI sandbox image** — GitHub Actions never built `bucker-sandbox:latest`;

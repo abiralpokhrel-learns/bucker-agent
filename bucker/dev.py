@@ -120,7 +120,7 @@ async def _spawn(cmd: list[str], *, env: dict | None = None,
     return proc
 
 
-async def run_stack(*, live_models: bool = True) -> int:
+async def run_stack(*, live_models: bool = True, open_browser: bool = True) -> int:
     """Start everything not already running; Ctrl+C stops what we started."""
     plan = plan_stack()
     print("bucker dev — local stack")
@@ -179,6 +179,15 @@ async def run_stack(*, live_models: bool = True) -> int:
         print("  press Ctrl+C to stop everything")
         print()
 
+        if open_browser:
+            try:
+                import webbrowser
+
+                webbrowser.open(f"http://localhost:{API_PORT}")
+                print("  [dev] opened the dashboard in your browser")
+            except Exception:  # noqa: BLE001 — cosmetic
+                pass
+
         while True:
             await asyncio.sleep(3600)
     except KeyboardInterrupt:
@@ -197,6 +206,57 @@ async def run_stack(*, live_models: bool = True) -> int:
     return 0
 
 
+async def _db_migrated() -> bool:
+    """Schema present? (migrations re-run top-to-bottom, so "applied" ==
+    "the tables exist"). Any failure — no DB, wrong creds, nothing there —
+    means setup is needed."""
+    from bucker.config import settings
+
+    try:
+        import asyncpg
+
+        conn = await asyncpg.connect(settings.database_url, timeout=3)
+        try:
+            return bool(
+                await conn.fetchval(
+                    "SELECT to_regclass('public.tasks') IS NOT NULL"
+                )
+            )
+        finally:
+            await conn.close()
+    except Exception:  # noqa: BLE001 — any probe failure => not ready
+        return False
+
+
+async def first_run_needed() -> bool:
+    """True when the stack is not ready: no .env, no reachable database,
+    or migrations not applied. ``bucker dev`` bootstraps when this is
+    true, so the ONLY command a user needs to remember is ``dev``."""
+    if not (PROJECT_ROOT / ".env").exists():
+        return True
+    if not port_open(port=POSTGRES_PORT):
+        return True
+    return not await _db_migrated()
+
+
+async def run_dev(
+    *,
+    live_models: bool = True,
+    force_setup: bool = False,
+    open_browser: bool = True,
+) -> int:
+    """The ONE command. First run: setup (prereqs, .env, Postgres,
+    migrations) then start the stack. Later runs: start only."""
+    if force_setup or await first_run_needed():
+        print("\n  [dev] first run detected — initializing ...\n")
+        rc = await run_setup()
+        if rc != 0:
+            print("  [dev] setup did not finish cleanly — fix the items above, "
+                  "then run this command again.")
+            return rc
+    return await run_stack(live_models=live_models, open_browser=open_browser)
+
+
 async def run_setup() -> int:
     """One-command environment bootstrap: checks, fixes, .env, DB.
 
@@ -213,17 +273,26 @@ async def run_setup() -> int:
     # --- python / uv --------------------------------------------------------
     # (requires-python >= 3.11 is enforced by uv itself, so no version gate
     # is needed here — the check below is only about the tool being present.)
-    if not _has("uv"):
-        print("  [setup] uv missing. Install: `winget install astral-sh.uv` "
-              "(or: pip install uv / curl -LsSf https://astral.sh/uv/install.sh | sh)")
-        ok = False
+    if not _has_uv():
+        if _try_install_uv():
+            print("  [setup] uv installed")
+        else:
+            print("  [setup] uv missing. Install it, then rerun: "
+                  "`winget install astral-sh.uv` "
+                  "(or: pip install uv / curl -LsSf https://astral.sh/uv/install.sh | sh)")
+            ok = False
     else:
         print(f"  [setup] uv ok (python {sys.version_info.major}.{sys.version_info.minor} "
               f"via uv run)")
 
     # --- docker ----------------------------------------------------------------
     if not _has("docker"):
-        print("  [setup] docker missing. Install Docker Desktop and start it.")
+        print("  [setup] docker missing — Docker Desktop: "
+              "https://www.docker.com/products/docker-desktop/")
+        if _open_browser_prompt("Open the download page?"):
+            import webbrowser
+
+            webbrowser.open("https://www.docker.com/products/docker-desktop/")
         ok = False
     elif not _has_docker_daemon():
         print("  [setup] Docker is installed but not running — start Docker Desktop.")
@@ -278,3 +347,47 @@ def _has_docker_daemon() -> bool:
         return result.returncode == 0
     except Exception:  # noqa: BLE001
         return False
+
+
+def _uv_install_path() -> Path | None:
+    """uv often installs off-PATH for the CURRENT shell (new shells see it).
+    Known home locations, checked so a fresh install still counts."""
+    exe = "uv.exe" if os.name == "nt" else "uv"
+    candidates = [
+        Path.home() / ".local" / "bin" / exe,
+        Path.home() / ".cargo" / "bin" / exe,
+    ]
+    return next((p for p in candidates if p.exists()), None)
+
+
+def _has_uv() -> bool:
+    return _has("uv") or _uv_install_path() is not None
+
+
+def _open_browser_prompt(question: str) -> bool:
+    """Yes/Enter => True; n/N => False; EOF (CI) => False."""
+    try:
+        answer = input(f"  {question} [Y/n] ").strip().lower()
+    except EOFError:
+        return False
+    return answer in ("", "y", "yes")
+
+
+def _try_install_uv() -> bool:
+    """Offer to install uv (safe, user-scoped). Returns True if uv is
+    available after the attempt (possibly via a known install path)."""
+    if not _open_browser_prompt("uv is missing. Install it now?"):
+        return False
+    import subprocess
+
+    try:
+        if os.name == "nt" and _has("winget"):
+            rc = subprocess.run(["winget", "install", "astral-sh.uv"],
+                                check=False).returncode
+        else:
+            rc = subprocess.run(
+                ["sh", "-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"],
+                check=False).returncode
+    except Exception:  # noqa: BLE001
+        return False
+    return rc == 0 and _has_uv()

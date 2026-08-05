@@ -1,0 +1,4 @@
+# Line-ending policy: shell scripts must stay LF even on Windows clones.
+*.sh text eol=lf
+start.bat text eol=crlf
+*.bat text eol=crlf

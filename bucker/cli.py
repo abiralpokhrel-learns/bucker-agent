@@ -81,14 +81,21 @@ async def cmd_setup(args: argparse.Namespace) -> int:
 
 
 async def cmd_dev(args: argparse.Namespace) -> int:
-    """Start the whole local stack in one terminal (replaces 3 terminals)."""
-    from bucker.dev import _print_plan, plan_stack, run_stack
+    """The ONE command: first run bootstraps (prereqs, .env, Postgres,
+    migrations), then starts the whole local stack in one terminal."""
+    from bucker.dev import _print_plan, first_run_needed, plan_stack, run_dev
 
     if args.dry_run:
         print("bucker dev --dry-run: what WOULD happen")
         _print_plan(plan_stack())
+        needs = await first_run_needed()
+        print(f"  first-run setup needed : {'yes' if needs else 'no'}")
         return 0
-    return await run_stack(live_models=not args.no_live)
+    return await run_dev(
+        live_models=not args.no_live,
+        force_setup=args.force_setup,
+        open_browser=not args.no_browser,
+    )
 
 
 async def cmd_start(args: argparse.Namespace) -> int:
@@ -702,12 +709,16 @@ def build_parser() -> argparse.ArgumentParser:
     setup_p.set_defaults(func=cmd_setup)
 
     dev_p = sub.add_parser(
-        "dev", help="start the WHOLE local stack (temporal + worker + dashboard) "
-                    "in one terminal")
+        "dev", help="THE one command: first run bootstraps, then starts "
+                    "temporal + worker + dashboard in one terminal")
     dev_p.add_argument("--dry-run", action="store_true",
                        help="show what would be started, start nothing")
     dev_p.add_argument("--no-live", action="store_true",
                        help="run the worker in recorded mode (no real model calls)")
+    dev_p.add_argument("--force-setup", action="store_true",
+                       help="re-run setup even if the machine already looks ready")
+    dev_p.add_argument("--no-browser", action="store_true",
+                       help="do not auto-open the dashboard")
     dev_p.set_defaults(func=cmd_dev)
 
     s = sub.add_parser("start", help="create a task and start its workflow")

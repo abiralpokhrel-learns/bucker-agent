@@ -63,28 +63,47 @@ evidence-based improvement is what the system actually *is*.
 - [CLI](#cli)
 - [Roadmap](BUILD_PLAN.md) · [Operations](docs/OPERATIONS.md) · [Security](SECURITY.md)
 
-## Quickstart (5 minutes)
+## Quickstart (1 minute)
 
-**You need:** Docker (running) and [uv](https://docs.astral.sh/uv/)
-(`winget install astral-sh.uv`). That's it.
+**You need:** Docker Desktop, running. That's it — `start.sh` installs
+`uv` if it's missing, and `bucker dev` bootstraps everything else on
+first run (`.env` + token, Postgres, migrations), then starts the stack.
 
 ```bash
 git clone https://github.com/abiralpokhrel-learns/bucker-agent && cd bucker-agent
-uv sync
+./start.sh          # Windows: start.bat
 
-uv run python -m bucker.cli setup   # checks, generates .env + token, starts Postgres, migrates
-uv run python -m bucker.cli dev     # starts Temporal + worker + dashboard — ONE command
+# first run:  prerequisites -> .env + token -> Postgres -> migrations ->
+#             Temporal + worker + dashboard (opens in your browser)
+# later runs: just starts the stack
+```
 
-# dashboard at http://localhost:8123 — create a task in the browser, or:
+The same command with plain uv (if you already have it):
+
+```bash
+uv run python -m bucker.cli dev     # THE one command
+```
+
+Dashboard: http://localhost:8123 — create a task in the browser, or:
+
+```bash
 uv run python -m bucker.cli start --objective "my first durable task" --wait
 uv run python -m bucker.cli events <task_id>   # the full audit trail
 uv run python -m bucker.cli show    <task_id>   # state, rebuilt from events
 ```
 
-The manual equivalent (if you prefer to run each piece yourself):
+### Advanced (manual) setup
+
+`bucker dev` does all of this for you; run the pieces yourself only if
+you want to. `bucker setup` is the explicit bootstrap (same checks,
+without starting the stack), `bucker dev --dry-run` shows the plan, and
+`bucker dev --force-setup` re-runs the bootstrap on an already-ready
+machine.
 
 ```bash
-docker compose up -d                 # Postgres
+uv sync
+uv run python -m bucker.cli setup    # checks, .env + token, Postgres, migrations
+docker compose up -d                 # Postgres (setup/dev do this too)
 temporal server start-dev            # Temporal UI at http://localhost:8233
 uv run python -m bucker.cli migrate  # apply schema + append-only grants
 BUCKER_MODEL_MODE=live uv run python -m bucker.worker &
