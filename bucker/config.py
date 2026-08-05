@@ -190,5 +190,44 @@ class Settings:
         default_factory=lambda: _env("BUCKER_ENABLE_MEMORY_API", "1") == "1"
     )
 
+    # --- inference gateway (bucker/gateway) ----------------------------------
+    # The OpenAI-compatible /v1 surface is an inference gateway now, not a
+    # passthrough: it owns provider selection, fallback, retries, circuit
+    # breakers, quotas, and health — Hermes/agents just make a request.
+    #
+    #: Default routing policy. priority = configured chain order
+    #: (BUCKER_MODEL then BUCKER_MODEL_FALLBACKS), filtered through
+    #: capabilities/quota/health — the old behavior, now policy-driven.
+    #: Other policies: cost | latency | balanced | free_only | local_first.
+    gateway_policy: str = field(
+        default_factory=lambda: _env("BUCKER_GATEWAY_POLICY", "priority")
+    )
+    #: Hard deadline for the whole inference attempt (routing + retries +
+    #: fallbacks). The engine slices this budget across attempts: a request
+    #: that allows 30s total cannot spend 20s on provider A and 20s on B.
+    gateway_deadline_s: float = field(
+        default_factory=lambda: float(_env("BUCKER_GATEWAY_DEADLINE_S", "60"))
+    )
+    #: Per-attempt provider timeout (connection + response). Never exceeds
+    #: the remaining deadline.
+    gateway_timeout_s: float = field(
+        default_factory=lambda: float(_env("BUCKER_GATEWAY_TIMEOUT_S", "30"))
+    )
+    #: Retryable failures (429/5xx/timeouts) get this many retries per
+    #: candidate before the engine moves to the next candidate.
+    gateway_max_retries: int = field(
+        default_factory=lambda: int(_env("BUCKER_GATEWAY_RETRIES", "1"))
+    )
+    #: Circuit breaker: consecutive failures before a provider/model is
+    #: opened, and how long it stays open before a single probe is allowed.
+    gateway_circuit_threshold: int = field(
+        default_factory=lambda: int(_env("BUCKER_GATEWAY_CIRCUIT_THRESHOLD", "3"))
+    )
+    gateway_circuit_open_for_s: float = field(
+        default_factory=lambda: float(
+            _env("BUCKER_GATEWAY_CIRCUIT_OPEN_FOR_S", "30")
+        )
+    )
+
 
 settings = Settings()

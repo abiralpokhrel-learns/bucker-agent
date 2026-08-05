@@ -158,8 +158,12 @@ sandboxes still work. `.env` is optional — dev defaults apply without it.)
 ## Use it as an API (OpenAI-compatible gateway)
 
 Your `BUCKER_API_TOKEN` is an API key. Point any OpenAI-compatible client
-at bucker and the free-first chain (DeepSeek → Ollama → OpenRouter free)
-routes with auto-fallback. Every call is audited as a task with cost:
+at bucker and the gateway decides where the request goes — it is a real
+inference gateway, not a passthrough. Provider selection is policy-driven
+(priority / cost / latency / balanced / free-only / local-first) against a
+capability registry, with auto-fallback, retries, circuit breakers, quota
+tracking, streaming, and tool calling. Every call is audited as a task
+with cost:
 
 ```bash
 curl http://localhost:8123/v1/chat/completions \
@@ -169,9 +173,34 @@ curl http://localhost:8123/v1/chat/completions \
        "messages":[{"role":"user","content":"say hi"}]}'
 ```
 
-`GET /v1/models` lists the configured chain. Live-verified 2026-08-05:
-a real DeepSeek call through the gateway returned an OpenAI-shaped
-response with usage + cost, and the call appeared in the audit trail.
+What the gateway does for you:
+
+- **Policy routing** — the default `priority` policy honors your configured
+  chain (DeepSeek → Ollama → OpenRouter free); `free_only` and
+  `local_first` are one env var away (`BUCKER_GATEWAY_POLICY`).
+- **Capability filtering** — a request with `tools` or `stream: true` is
+  only routed to models that actually support it; impossible requests are
+  rejected before any provider is called.
+- **Failover** — a 429/5xx/timeout retries with backoff, then falls back;
+  auth errors never retry; a dead provider's circuit opens and it stops
+  eating request time until it recovers.
+- **Quotas** — free-tier daily caps are enforced against a durable usage
+  ledger (`gateway_usage` table); an exhausted provider is skipped until
+  its entitlement resets.
+- **Streaming + tool calls** — SSE with normalized deltas and canonical
+  `tool_calls`, whatever the upstream provider speaks.
+- **Health** — `GET /health/live` (process) and `GET /health/ready`
+  (database) for orchestrators; `GET /v1/models` lists what is actually
+  routable right now.
+- **Normalized errors** — provider internals never leak; callers get
+  `{"error": {"message", "type", "code"}}` with a stable taxonomy
+  (rate_limit, quota_exceeded, timeout, ...).
+
+Architecture: `bucker/gateway/` is a self-contained package — canonical
+request model, model registry, provider adapters (DeepSeek / OpenRouter /
+Ollama, OpenAI-compatible), routing engine, circuit breakers, quota
+manager. Adding a provider = one adapter class + registry entries; the
+agent never changes.
 
 ## Windows notes (native)
 

@@ -34,6 +34,10 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
     "python-dotenv>=1.0",
+    # Inference gateway provider adapters (bucker/gateway/adapters.py)
+    # speak HTTP to OpenAI-compatible endpoints directly. Bounded per the
+    # dependency pinning policy (<2 for a post-1.0 package).
+    "httpx>=0.28.1,<1",
 ]
 
 [project.optional-dependencies]

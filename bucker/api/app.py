@@ -70,9 +70,11 @@ app = FastAPI(
     description="Durable, verified agent execution. Nothing is trusted until verified.",
 )
 
+from bucker.api.gateway import health_router  # noqa: E402
 from bucker.api.gateway import router as gateway_router  # noqa: E402
 
 app.include_router(gateway_router)
+app.include_router(health_router)
 
 security = HTTPBearer(auto_error=False)
 

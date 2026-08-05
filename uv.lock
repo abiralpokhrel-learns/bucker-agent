@@ -201,6 +201,7 @@ source = { editable = "." }
 dependencies = [
     { name = "asyncpg" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "jsonschema" },
     { name = "pydantic" },
     { name = "python-dotenv" },
@@ -230,6 +231,7 @@ dev = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.29" },
     { name = "fastapi", specifier = ">=0.111" },
+    { name = "httpx", specifier = ">=0.28.1,<1" },
     { name = "jsonschema", specifier = ">=4.22" },
     { name = "litellm", marker = "extra == 'llm'", specifier = ">=1.40" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.9,<2" },

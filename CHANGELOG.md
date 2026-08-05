@@ -8,6 +8,18 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Inference gateway engine** (`bucker/gateway/`) — the OpenAI-compatible
+  `/v1` surface is now a policy-driven inference gateway, not a
+  passthrough: canonical request/response model, capability model registry
+  (tools/streaming/vision/reasoning/context/pricing/free-tier), provider
+  adapters (DeepSeek, OpenRouter, Ollama; OpenAI-compatible base class +
+  scripted `SimulatedProvider` for hermetic tests), routing engine with
+  six policies (priority/cost/latency/balanced/free-only/local-first),
+  deadline-bounded retries with backoff + jitter, circuit breakers,
+  Postgres-backed quota ledger (`gateway_usage`, migration 004),
+  normalized error taxonomy, SSE streaming with tool-call deltas, and
+  `/health/live` + `/health/ready` endpoints. Requests that fail their
+  hard requirements are rejected before any provider is called.
 - **Self-critique loop (loop engineering)** — every produced diff is
   reviewed by a critic pass before it costs a sandbox verification cycle;
   verdicts other than *ok* trigger one bounded repair round
