@@ -189,6 +189,11 @@ class OpenAICompatAdapter(ProviderAdapter):
                 }
                 for tc in raw_tool_calls
             ]
+        # Empty content with no tool call is a failed attempt, not a
+        # success: reasoning models can spend the whole output budget on
+        # reasoning_content and return an empty message. (The ENGINE is the
+        # single source of truth for this guard — see RouterEngine._attempt
+        # — so every adapter and the simulated provider behave identically.)
         usage_ = data.get("usage") or {}
         return RawCompletion(
             text=text,

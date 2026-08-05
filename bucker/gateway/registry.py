@@ -165,11 +165,54 @@ class ModelRegistry:
     def get(self, canonical_id: str) -> GatewayModel | None:
         return self._models.get(canonical_id)
 
+    def ensure(self, canonical_id: str, *, priority: int = 100) -> GatewayModel:
+        """Register a model if missing — chain ids the operator configured
+        (ModelRouter model/fallbacks) must be routable even when they are
+        not in the curated catalog. Returns the existing or new entry."""
+        model = self._models.get(canonical_id)
+        if model is None:
+            model = _build_model(canonical_id, priority=priority)
+            self._models[canonical_id] = model
+        return model
+
     def all(self) -> list[GatewayModel]:
         return sorted(self._models.values(), key=lambda m: m.priority)
 
     def available(self) -> list[GatewayModel]:
         return [m for m in self.all() if m.status == "available"]
+
+    def config_version(self) -> str:
+        """Stable content hash of the registry (spec §29).
+
+        Routing decisions are traceable to the registry state that produced
+        them: models, capabilities, pricing, free tier, status, priority.
+        The hash changes whenever that state changes, so a recording's
+        routing envelope can answer "why did routing change yesterday".
+        """
+        import hashlib
+        import json
+
+        payload = json.dumps(
+            [
+                {
+                    "id": m.canonical_id,
+                    "provider": m.provider,
+                    "context": m.context,
+                    "max_output": m.max_output,
+                    "caps": sorted(m.capabilities),
+                    "price_in": m.price_input_per_m,
+                    "price_out": m.price_output_per_m,
+                    "free": m.free,
+                    "status": m.status,
+                    "daily": m.daily_limit,
+                    "priority": m.priority,
+                }
+                for m in self.all()
+            ],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
     def filter(
         self,

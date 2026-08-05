@@ -8,6 +8,25 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **ModelRouter-v2 bridge** — the internal inference path (planner /
+  worker / critic) now runs through the gateway engine in live mode:
+  `ModelRouter.complete()` stays the stable API (no call sites changed),
+  recorded mode is untouched (deterministic replay), and live mode
+  delegates to `RouterEngine` — gaining capability filtering, policy
+  routing, circuit breakers, and fallback. The recording carries a
+  **routing envelope** (policy, registry `config_version`, candidates,
+  selected provider/model, reason, fallback attempts) so replay is a pure
+  lookup and never re-decides routing: *live = intelligent routing,
+  replay = historical reconstruction*. Regression-proof: a hard test
+  proves same-digest replay returns the identical response while the
+  engine is never contacted, even with provider health flipped. The
+  empty-content guard (reasoning models burning the output budget) moved
+  from the router into the engine, covering every adapter. Adaptive
+  `next_model` now resolves through the model registry instead of a
+  hardcoded `FALLBACK_MODELS` list (which silently named paid OpenRouter
+  models, violating the free-only rule) — adaptive expresses a
+  requirement, the gateway picks the deployment. `ModelResponse` gained
+  `tool_calls`/`finish_reason` (Phase 4 tool-calling worker surface).
 - **Inference gateway engine** (`bucker/gateway/`) — the OpenAI-compatible
   `/v1` surface is now a policy-driven inference gateway, not a
   passthrough: canonical request/response model, capability model registry

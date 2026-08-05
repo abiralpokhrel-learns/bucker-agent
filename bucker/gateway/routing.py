@@ -55,6 +55,7 @@ from bucker.gateway.errors import (
     GatewayTimeoutError,
     InvalidRequestError,
     NoCandidatesError,
+    ProviderUnavailableError,
 )
 from bucker.gateway.models import (
     ROUTING_POLICIES,
@@ -216,6 +217,16 @@ class RouterEngine:
     # Non-streaming execution
     # ==================================================================
     async def complete(self, req: InferenceRequest) -> InferenceResponse:
+        """Run one request. Returns the normalized response only."""
+        response, _ = await self.complete_with_decision(req)
+        return response
+
+    async def complete_with_decision(
+        self, req: InferenceRequest
+    ) -> tuple[InferenceResponse, RoutingDecision]:
+        """Run one request and ALSO return the routing decision — the audit
+        envelope (policy, candidates, fallback attempts) that live-mode
+        recordings need for replay fidelity (see ModelRouter)."""
         decision = await self.plan(req)
         deadline = time.monotonic() + (req.deadline_s or self.deadline_s)
         started = time.monotonic()
@@ -259,7 +270,7 @@ class RouterEngine:
                 req.request_id, model.provider, model.canonical_id,
                 latency_ms, len(decision.attempts) + 1,
             )
-            return response
+            return response, decision
 
         await self._record_usage(
             req, None, None, "error", "all_providers_failed_error",
@@ -279,6 +290,7 @@ class RouterEngine:
         deadline = time.monotonic() + (req.deadline_s or self.deadline_s)
         started = time.monotonic()
         forwarded = False
+        tool_calls: list[dict] | None = None
         prompt_tokens = completion_tokens = 0
 
         for model in self._candidate_models(decision):
@@ -300,6 +312,8 @@ class RouterEngine:
                         )
                     if ev["type"] in ("text_delta", "tool_call_delta"):
                         forwarded = True
+                    elif ev["type"] == "finish":
+                        tool_calls = ev.get("tool_calls")
                     elif ev["type"] == "usage":
                         prompt_tokens = ev.get("prompt_tokens", 0)
                         completion_tokens = ev.get("completion_tokens", 0)
@@ -333,7 +347,21 @@ class RouterEngine:
                     return
                 continue
 
-            # Clean stream end.
+            # Clean stream end. An empty stream (no text, no tool calls) is
+            # a failed attempt, not a success — and because nothing was
+            # forwarded, switching to the next candidate is still safe.
+            if not forwarded and not tool_calls:
+                decision.attempts.append({
+                    "provider": model.provider, "model": model.canonical_id,
+                    "ok": False, "error_type": "empty_response",
+                })
+                self.circuits.record_failure(model.key, 0)
+                log.warning(
+                    "stream returned empty content request_id=%s provider=%s model=%s",
+                    req.request_id, model.provider, model.canonical_id,
+                )
+                continue
+
             decision.selected = model.canonical_id
             latency_ms = int((time.monotonic() - started) * 1000)
             self.circuits.record_success(model.key, latency_ms)
@@ -461,11 +489,11 @@ class RouterEngine:
                     provider=model.provider, model=model.canonical_id,
                 )
             try:
-                return await asyncio.wait_for(
+                raw = await asyncio.wait_for(
                     adapter.complete(req, model.provider_model_id),
                     timeout=max(0.05, min(timeout_s, remaining)),
                 )
-            except TimeoutError:
+            except TimeoutError:  # noqa: UP041 — asyncio.TimeoutError, same type
                 # wait_for fired (the adapter's own timeout may be larger):
                 # same routing semantics as a provider timeout.
                 last_err = GatewayTimeoutError(
@@ -474,6 +502,21 @@ class RouterEngine:
                 )
             except GatewayError as err:
                 last_err = err
+            else:
+                # Empty content with no tool call is a FAILED attempt, not
+                # a success: reasoning models (DeepSeek v4-flash) can spend
+                # the whole output budget on reasoning_content. Retryable,
+                # so the engine falls back — the guard the internal router
+                # used to have, now owned by the gateway for every adapter.
+                if not raw.text.strip() and not raw.tool_calls:
+                    last_err = ProviderUnavailableError(
+                        f"{model.provider} returned an empty completion with "
+                        "no tool call (reasoning may have consumed the "
+                        "output budget)",
+                        provider=model.provider, model=model.canonical_id,
+                    )
+                else:
+                    return raw
             if not last_err.retryable:
                 raise last_err
             if try_i < max_tries - 1:
@@ -524,6 +567,7 @@ class RouterEngine:
             latency_ms=latency_ms,
             attempts=len(decision.attempts) + 1,
             from_fallback=len(decision.attempts) > 0,
+            raw=raw.raw or {"text": raw.text},
         )
 
     async def _record_usage(

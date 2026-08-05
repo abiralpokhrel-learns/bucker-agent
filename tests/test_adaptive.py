@@ -77,23 +77,29 @@ def test_clarify_objective_asks_question():
 def test_next_model_picks_unused():
     result = next_model("gpt-4", ["gpt-4"])
     assert result != "gpt-4"
+    # Resolved through the gateway registry: a canonical, provider-prefixed id.
+    assert "/" in result
 
 
 def test_next_model_skips_already_tried():
     result = next_model("gpt-4", ["gpt-4"])
     assert result != "gpt-4"
-    # Should be the first fallback not in the used list.
-    assert "nvidia" in result or "minimax" in result or "claude" in result
+    # Registry-authoritative: the next coding-capable model in priority
+    # order, never a hardcoded deployment list.
+    from bucker.gateway.registry import ModelRegistry
+
+    registry_ids = {m.canonical_id for m in ModelRegistry.default().all()}
+    assert result in registry_ids
 
 
 def test_next_model_fallback_when_all_tried():
-    used = [
-        "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
-        "openrouter/minimax/minimax-m3",
-        "openrouter/anthropic/claude-sonnet-4",
-    ]
-    result = next_model(used[-1], used)
-    assert result == used[-1]  # falls back to current model
+    from bucker.gateway.registry import ModelRegistry
+
+    registry = ModelRegistry.default()
+    all_ids = [m.canonical_id for m in registry.all()]
+    # Try everything the registry knows; the function must stay put.
+    result = next_model(all_ids[-1], all_ids)
+    assert result == all_ids[-1]  # falls back to current model
 
 
 # --------------------------------------------------- attempt history ----

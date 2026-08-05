@@ -34,14 +34,15 @@ class Strategy(StrEnum):
     SWITCH_MODEL = "switch_model"  # Use a different model.
 
 
-#: Fallback models to try when SWITCH_MODEL is selected. Ordered by cost
-#: (cheapest first) so the system tries cheaper alternatives before burning
-#: budget on a frontier model.
-FALLBACK_MODELS = (
-    "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
-    "openrouter/minimax/minimax-m3",
-    "openrouter/anthropic/claude-sonnet-4",
-)
+#: Fallback models to try when SWITCH_MODEL is selected.
+#
+#: DELIBERATELY REMOVED (ModelRouter-v2, Aug 2026): a hardcoded model list
+#: here is a second source of truth that drifts from the registry (and it
+#: silently named paid OpenRouter models, violating the free-only rule).
+#: Adaptive strategy now expresses a REQUIREMENT — "a coding-capable model
+#: I haven't tried" — and resolves it through the gateway's model registry.
+#: The registry is authoritative for model ids; the gateway engine decides
+#: the actual provider deployment.
 
 
 @dataclass(slots=True)
@@ -147,9 +148,21 @@ def clarify_objective(objective: str, diagnostics: list[str]) -> str:
 
 
 def next_model(current: str, used: list[str]) -> str:
-    """Pick the next model to try. Avoids models already tried."""
-    tried = set(used)
-    for model in FALLBACK_MODELS:
-        if model not in tried:
-            return model
-    return current  # fallback: same model
+    """Pick the next model to try, resolved through the gateway registry.
+
+    Adaptive strategy expresses a REQUIREMENT (a coding-capable model not
+    tried yet), never a provider deployment — the registry (priority
+    order, free tier first for SWITCH_MODEL so a failing paid attempt
+    falls back to free/local before anything else) supplies the id, and
+    the gateway engine makes the final deployment decision.
+    """
+    from bucker.gateway.registry import ModelRegistry
+
+    tried = set(used) | {current}
+    for model in ModelRegistry.default().all():
+        if model.canonical_id in tried:
+            continue
+        if not model.supports("coding"):
+            continue
+        return model.canonical_id
+    return current  # nothing untried left: stay put, the workflow still retries

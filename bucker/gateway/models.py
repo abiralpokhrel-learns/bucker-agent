@@ -122,6 +122,10 @@ class InferenceResponse:
     latency_ms: int
     attempts: int                    # how many candidate attempts it took
     from_fallback: bool = False
+    #: Verbatim provider payload, for archiving/audit only (the ModelRouter
+    #: stores it content-addressed for replay). NOT part of the API contract
+    #: — never returned to callers.
+    raw: dict | None = None
 
 
 # --------------------------------------------------------------------------

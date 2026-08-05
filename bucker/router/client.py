@@ -25,13 +25,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from bucker.config import settings
 from bucker.core.blob import BlobStore
+from bucker.gateway.errors import GatewayError
+from bucker.gateway.models import InferenceRequest
+from bucker.gateway.quota import QuotaManager
+from bucker.gateway.routing import RouterEngine
 
 
 class RecordingMissing(Exception):
@@ -59,6 +62,12 @@ class ModelResponse:
     from_recording: bool
     usage: dict[str, Any] = field(default_factory=dict)
     cost_unknown: bool = False
+    #: Canonical tool calls [{id, name, arguments(json str)}] — the
+    #: gateway preserves them across the ModelRouter boundary so a
+    #: future tool-calling worker (Phase 4) can execute them. Recorded
+    #: mode replays them byte-for-byte like text.
+    tool_calls: list[dict] | None = None
+    finish_reason: str = "stop"
 
 
 def _redact_messages(messages: list[dict]) -> list[dict]:
@@ -161,6 +170,7 @@ class ModelRouter:
         mode: str | None = None,
         recordings: RecordingStore | None = None,
         fallbacks: tuple[str, ...] | None = None,
+        engine: RouterEngine | None = None,
     ) -> None:
         # Defaults resolve from config, never from literals in this file.
         self.model = model or settings.model
@@ -172,6 +182,25 @@ class ModelRouter:
         self.recordings = recordings or RecordingStore(
             Path(settings.blob_root).parent / "recordings"
         )
+        # The inference gateway engine behind LIVE mode (Phase 1 of the
+        # ModelRouter-v2 bridge): capability filtering, policy routing,
+        # circuit breakers, and fallback now live in bucker/gateway/, not
+        # in a hardcoded chain here. RECORDED mode never touches the engine
+        # — replay is deterministic by construction. Injected for tests;
+        # the default is the production engine. The internal path does not
+        # write the gateway_usage ledger (that covers /v1 calls); its audit
+        # is the recording envelope (request/routing/response).
+        self.engine = engine if engine is not None else RouterEngine(
+            quota=QuotaManager(),
+        )
+        # The router's configured chain (model + fallbacks) is the
+        # operator's choice; make it routable in the engine even when the
+        # ids are not in the curated catalog (e.g. adaptive-selected ones).
+        # Existing entries keep their registry priorities — the REQUESTED
+        # model always goes first via the engine's explicit preference.
+        for i, cid in enumerate([self.model, *self.model_fallbacks]):
+            if cid:
+                self.engine.registry.ensure(cid, priority=i)
 
         if self.mode not in ("live", "recorded"):
             raise ValueError(
@@ -194,12 +223,18 @@ class ModelRouter:
         purpose: str,
         temperature: float = 0.0,
         max_tokens: int | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> ModelResponse:
         """Run one completion.
 
         ``purpose`` ("planner", "worker", ...) is recorded for telemetry so cost
         can later be attributed per component, not just per task, and it selects
         the default output ceiling.
+
+        ``tools`` / ``tool_choice`` pass through to the gateway engine — the
+        Phase 4 tool-calling worker surface. Recorded mode replays stored
+        tool-call responses like any other response.
         """
         if max_tokens is None:
             max_tokens = self.max_tokens_for(purpose)
@@ -222,7 +257,8 @@ class ModelRouter:
             return self._from_recording(digest, request_ref)
 
         return await self._live(
-            digest, request_ref, messages, purpose, temperature, max_tokens
+            digest, request_ref, messages, purpose, temperature, max_tokens,
+            tools=tools, tool_choice=tool_choice,
         )
 
     # ------------------------------------------------------------ replay --
@@ -256,6 +292,8 @@ class ModelRouter:
             from_recording=True,
             usage=record.get("usage", {}),
             cost_unknown=bool(record.get("cost_unknown", False)),
+            tool_calls=record.get("tool_calls"),
+            finish_reason=record.get("finish_reason", "stop"),
         )
 
     # -------------------------------------------------------------- live --
@@ -267,110 +305,105 @@ class ModelRouter:
         purpose: str,
         temperature: float,
         max_tokens: int | None,
+        *,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> ModelResponse:
-        # Imported lazily: litellm is an optional extra, so Phase 0 installs
-        # and the whole recorded-mode test suite work without it.
+        """Live inference through the gateway engine (ModelRouter-v2).
+
+        The engine owns provider selection, fallback, retries, circuits,
+        and capability filtering. The recording captures the full envelope
+        — request, ROUTING DECISION, response — so replay is a pure lookup
+        and never re-decides routing (live = intelligent routing, replay =
+        historical reconstruction; the two must not mix).
+        """
+        request = InferenceRequest(
+            purpose=purpose,
+            messages=messages,
+            model=self.model,          # the REQUESTED model (a preference)
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
         try:
-            import litellm
-        except ImportError as exc:  # pragma: no cover
+            response, decision = await self.engine.complete_with_decision(request)
+        except GatewayError as exc:
+            # Preserve the router's public error contract for callers.
             raise ModelCallFailed(
-                "litellm is not installed. Run: uv sync --extra llm"
+                f"all models in the chain failed: {exc}"
             ) from exc
 
-        # max_tokens is always set by complete(), never left to the provider.
-        kwargs: dict[str, Any] = {
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+        # Redact credential-shaped spans from the archived raw provider
+        # response (content can carry secrets the prompt-injection surface
+        # cares about).
+        raw_ref = self.blobs.put_json(
+            _redact_raw(response.raw or {"text": response.content})
+        )
 
-        # The fallback chain: try the configured model, then each fallback in
-        # order. A dead provider (down, key rejected, quota exhausted) must
-        # not take down a task when a working model is configured behind it.
-        # The digest stays keyed to the PRIMARY model, so recorded-mode
-        # replay is unaffected by the chain.
-        chain = [self.model, *self.model_fallbacks]
-        errors: list[str] = []
-        for model in chain:
-            started = time.perf_counter()
-            try:
-                # DeepSeek is OpenAI-compatible but has its own endpoint;
-                # litellm's default already matches, but honor an explicit
-                # DEEPSEEK_BASE_URL override rather than assuming.
-                model_kwargs = dict(kwargs)
-                if model.startswith("deepseek/") and settings.deepseek_base_url:
-                    model_kwargs["api_base"] = settings.deepseek_base_url
-                response = await litellm.acompletion(model=model, **model_kwargs)
-            except Exception as exc:  # noqa: BLE001 — surface every provider error
-                errors.append(f"{model}: {type(exc).__name__}: {exc}")
-                continue
-            latency_ms = int((time.perf_counter() - started) * 1000)
+        cost_usd = response.usage.get("cost_usd")
+        # Hardening review: never record a fabricated $0.00 for a real
+        # call. Missing pricing metadata makes the cost UNKNOWN —
+        # telemetry stores NULL and budgeted workflows fail closed.
+        cost_unknown = cost_usd is None
 
-            raw = response.model_dump() if hasattr(response, "model_dump") else dict(response)
-            # Redact credential-shaped spans from the archived raw provider
-            # response (hardening review) — content can carry secrets the
-            # prompt-injection surface cares about.
-            raw_ref = self.blobs.put_json(_redact_raw(raw))
-
-            text = raw["choices"][0]["message"]["content"] or ""
-            usage = raw.get("usage") or {}
-
-            # Empty content is a failed attempt, not a success: reasoning
-            # models (DeepSeek v4-flash) can spend the whole output budget
-            # on reasoning_content and return an empty message. Returning
-            # "" as a valid completion would poison the planner/worker with
-            # an unparseable "response". Fall through to the next model.
-            if not text.strip():
-                errors.append(
-                    f"{model}: empty content (reasoning consumed the "
-                    f"output budget? usage={usage.get('completion_tokens')})"
-                )
-                continue
-
-            # Hardening review: never record a fabricated $0.00 for a real
-            # call. Missing pricing metadata makes the cost UNKNOWN —
-            # telemetry stores NULL and budgeted workflows fail closed.
-            cost_usd: float | None = None
-            cost_unknown = True
-            try:
-                cost_usd = float(
-                    litellm.completion_cost(completion_response=response) or 0.0
-                )
-                cost_unknown = False
-            except Exception:
-                # Pricing metadata missing: cost is unknown, not free.
-                cost_unknown = True
-
-            self.recordings.put(
-                digest,
-                {
-                    "model": self.model,          # the configured primary
-                    "model_served": model,        # the one that actually answered
-                    "purpose": purpose,
-                    "text": text,
-                    "raw_ref": raw_ref,
-                    "request_ref": request_ref,
-                    "cost_usd": cost_usd,
-                    "cost_unknown": cost_unknown,
-                    "latency_ms": latency_ms,
-                    "usage": usage,
+        self.recordings.put(
+            digest,
+            {
+                "model": self.model,          # the configured primary (replay key)
+                "model_served": response.model,  # the one that actually answered
+                "purpose": purpose,
+                "text": response.content,
+                "raw_ref": raw_ref,
+                "request_ref": request_ref,
+                "cost_usd": cost_usd,
+                "cost_unknown": cost_unknown,
+                "latency_ms": response.latency_ms,
+                "usage": response.usage,
+                "finish_reason": response.finish_reason,
+                "tool_calls": response.tool_calls,
+                # The routing envelope: what was requested, what was
+                # decided, and why. This is what replay DOES NOT re-derive.
+                "routing": {
+                    "policy": decision.policy,
+                    "config_version": self.engine.registry.config_version(),
+                    "candidates": [
+                        {"provider": m.provider, "model": m.canonical_id}
+                        for cid in decision.candidates
+                        for m in [self.engine.registry.get(cid)]
+                        if m is not None
+                    ],
+                    "selected": {
+                        "provider": response.provider,
+                        "model": response.model,
+                    },
+                    "reason": (
+                        "primary_candidate"
+                        if not decision.attempts
+                        else "fallback_after_failure"
+                    ),
+                    "fallback_attempts": [
+                        {
+                            "provider": a["provider"],
+                            "model": a["model"],
+                            "error": a["error_type"],
+                        }
+                        for a in decision.attempts
+                    ],
                 },
-            )
+            },
+        )
 
-            return ModelResponse(
-                text=text,
-                model=model,
-                cost_usd=cost_usd,
-                cost_unknown=cost_unknown,
-                latency_ms=latency_ms,
-                raw_ref=raw_ref,
-                request_ref=request_ref,
-                from_recording=False,
-                usage=usage,
-            )
-
-        raise ModelCallFailed(
-            "all models in the chain failed: " + "; ".join(errors)
-            if errors
-            else f"no models configured (chain is empty, primary={self.model!r})"
+        return ModelResponse(
+            text=response.content,
+            model=response.model,
+            cost_usd=cost_usd,
+            cost_unknown=cost_unknown,
+            latency_ms=response.latency_ms,
+            raw_ref=raw_ref,
+            request_ref=request_ref,
+            from_recording=False,
+            usage=response.usage,
+            tool_calls=response.tool_calls,
+            finish_reason=response.finish_reason,
         )

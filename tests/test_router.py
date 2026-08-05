@@ -11,6 +11,10 @@ import pytest
 
 from bucker.config import settings
 from bucker.core.blob import BlobStore
+from bucker.gateway.adapters import RawCompletion, SimulatedProvider
+from bucker.gateway.quota import QuotaManager
+from bucker.gateway.registry import GatewayModel, ModelRegistry
+from bucker.gateway.routing import RouterEngine
 from bucker.router.client import (
     ModelCallFailed,
     ModelRouter,
@@ -221,157 +225,157 @@ def test_no_hardcoded_model_names_in_source():
 
 
 # --------------------------------------------------------- fallback chain ---
-# Live-mode path with litellm stubbed out — no network, no money, but the
-# fallback loop itself is exercised. Same spirit as OmniRoute's auto-fallback:
-# a dead provider must not take down a task when a working model follows it.
+# Live-mode path through the gateway engine with SimulatedProviders — no
+# network, no money, but the fallback loop itself is exercised. Same spirit
+# as OmniRoute's auto-fallback: a dead provider must not take down a task
+# when a working model follows it. (The old litellm stubs were removed with
+# the ModelRouter-v2 bridge — live mode now goes through RouterEngine.)
 
 
-class _FakeResponse:
-    """Shape litellm's completion object needs for our consumer."""
-
-    def __init__(self, text: str):
-        self._text = text
-
-    def model_dump(self) -> dict:
-        return {"choices": [{"message": {"content": self._text}}], "usage": {}}
-
-
-def _stub_litellm(monkeypatch, acompletion, cost=0.01):
-    """Put a fake litellm module where the router's lazy import finds it."""
-    import sys
-    import types
-
-    fake = types.SimpleNamespace(
-        acompletion=acompletion,
-        completion_cost=lambda completion_response: cost,
+def _model(canonical_id: str, *, priority: int) -> GatewayModel:
+    return GatewayModel(
+        canonical_id=canonical_id,
+        provider=canonical_id.split("/")[0],
+        provider_model_id=canonical_id.split("/", 1)[1],
+        family=canonical_id.split("/", 1)[1],
+        context=128_000,
+        max_output=8192,
+        capabilities=frozenset({"tools", "streaming", "coding"}),
+        price_input_per_m=0.01,
+        price_output_per_m=0.02,
+        free=False,
+        priority=priority,
     )
-    monkeypatch.setitem(sys.modules, "litellm", fake)
 
 
-async def test_fallback_serves_when_primary_fails(monkeypatch, tmp_path):
-    calls: list[str] = []
-
-    async def acompletion(**kwargs):
-        calls.append(kwargs["model"])
-        if kwargs["model"] == "primary":
-            raise RuntimeError("provider down")
-        return _FakeResponse("hello from fallback")
-
-    _stub_litellm(monkeypatch, acompletion)
-    router = ModelRouter(
+def _live_router(tmp_path, adapters, model, fallbacks=(), *, max_retries=0):
+    registry = ModelRegistry({
+        m.canonical_id: m
+        for m in [
+            _model(model, priority=0),
+            *(_model(f, priority=i + 1) for i, f in enumerate(fallbacks)),
+        ]
+    })
+    engine = RouterEngine(
+        registry=registry,
+        adapters=adapters,
+        quota=QuotaManager(),  # no pool -> quota checks are no-ops
+        policy="priority",
+        max_retries=max_retries,
+        deadline_s=30.0,
+        timeout_s=5.0,
+    )
+    return ModelRouter(
         BlobStore(tmp_path / "blobs"),
-        model="primary",
+        model=model,
         mode="live",
         recordings=RecordingStore(tmp_path / "recordings"),
-        fallbacks=("fallback-a", "fallback-b"),
+        fallbacks=fallbacks,
+        engine=engine,
+    )
+
+
+async def test_fallback_serves_when_primary_fails(tmp_path):
+    a = SimulatedProvider("a")
+    b = SimulatedProvider("b")
+    a.script("primary", "server_error")
+    router = _live_router(
+        tmp_path, {"a": a, "b": b},
+        model="a/primary", fallbacks=("b/fallback-a",),
     )
 
     resp = await router.complete(
         [{"role": "user", "content": "hi"}], purpose="planner"
     )
 
-    assert calls == ["primary", "fallback-a"]  # only reached the first working one
-    assert resp.model == "fallback-a"
-    assert resp.text == "hello from fallback"
+    assert [c[0] for c in a.calls] == ["primary"]       # reached the first model
+    assert [c[0] for c in b.calls] == ["fallback-a"]    # then fell back
+    assert resp.model == "b/fallback-a"
+    assert resp.text == "hello from b/fallback-a"
     assert resp.from_recording is False
 
 
-async def test_all_fail_raises_with_every_error(monkeypatch, tmp_path):
-    async def acompletion(**kwargs):
-        raise RuntimeError("nope")
-
-    _stub_litellm(monkeypatch, acompletion)
-    router = ModelRouter(
-        BlobStore(tmp_path / "blobs"),
-        model="primary",
-        mode="live",
-        recordings=RecordingStore(tmp_path / "recordings"),
-        fallbacks=("fallback-a",),
+async def test_all_fail_raises_with_every_error(tmp_path):
+    a = SimulatedProvider("a")
+    b = SimulatedProvider("b")
+    a.script("primary", "server_error")
+    b.script("fallback-a", "server_error")
+    router = _live_router(
+        tmp_path, {"a": a, "b": b},
+        model="a/primary", fallbacks=("b/fallback-a",),
     )
 
     with pytest.raises(ModelCallFailed, match="all models in the chain failed"):
         await router.complete([{"role": "user", "content": "hi"}], purpose="planner")
 
 
-async def test_empty_content_falls_through_chain(monkeypatch, tmp_path):
+class _EmptyContentAdapter(SimulatedProvider):
+    """A provider whose reasoning consumed the whole output budget."""
+
+    async def complete(self, req, model_id):
+        self.calls.append((model_id, req))
+        return RawCompletion(
+            text="", tool_calls=None, finish_reason="stop",
+            usage={"prompt_tokens": 5, "completion_tokens": 100},
+        )
+
+
+async def test_empty_content_falls_through_chain(tmp_path):
     """Reasoning models that spend the budget on reasoning return '' —
-    that is a failed attempt, not a completion: fall to the next model."""
-    calls: list[str] = []
-
-    async def acompletion(**kwargs):
-        calls.append(kwargs["model"])
-        if kwargs["model"] == "deepseek/deepseek-v4-flash":
-            return _FakeResponse("")          # reasoning ate the budget
-        return _FakeResponse("real answer")
-
-    _stub_litellm(monkeypatch, acompletion)
-    router = ModelRouter(
-        BlobStore(tmp_path / "blobs"),
+    that is a failed attempt, not a completion: fall to the next model.
+    The guard now lives in the engine, not the router."""
+    deepseek = _EmptyContentAdapter("deepseek")
+    ollama = SimulatedProvider("ollama")
+    router = _live_router(
+        tmp_path, {"deepseek": deepseek, "ollama": ollama},
         model="deepseek/deepseek-v4-flash",
-        mode="live",
-        recordings=RecordingStore(tmp_path / "recordings"),
         fallbacks=("ollama/qwen2.5-coder:7b",),
     )
 
     resp = await router.complete(
         [{"role": "user", "content": "hi"}], purpose="planner"
     )
-    assert calls == ["deepseek/deepseek-v4-flash", "ollama/qwen2.5-coder:7b"]
-    assert resp.text == "real answer"
+    assert [c[0] for c in deepseek.calls] == ["deepseek-v4-flash"]
+    assert [c[0] for c in ollama.calls] == ["qwen2.5-coder:7b"]
+    assert resp.text == "hello from ollama/qwen2.5-coder:7b"
     assert resp.model == "ollama/qwen2.5-coder:7b"
 
 
-async def test_deepseek_model_gets_api_base(monkeypatch, tmp_path):
-    """deepseek/ models must reach the configured DeepSeek endpoint."""
-    captured: dict = {}
+def test_deepseek_adapter_uses_configured_endpoint():
+    """deepseek/ models must reach the configured DeepSeek endpoint — the
+    adapter owns the base URL now (the old litellm api_base kwarg is gone)."""
+    from bucker.gateway.adapters import DeepSeekAdapter
 
-    async def acompletion(**kwargs):
-        captured.update(kwargs)
-        return _FakeResponse("ok from deepseek")
-
-    _stub_litellm(monkeypatch, acompletion)
-    router = ModelRouter(
-        BlobStore(tmp_path / "blobs"),
-        model="deepseek/deepseek-v4-flash",
-        mode="live",
-        recordings=RecordingStore(tmp_path / "recordings"),
-    )
-    resp = await router.complete(
-        [{"role": "user", "content": "hi"}], purpose="planner"
-    )
-    assert captured.get("api_base") == settings.deepseek_base_url
-    assert resp.text == "ok from deepseek"
+    adapter = DeepSeekAdapter()
+    base = settings.deepseek_base_url.rstrip("/")
+    expected = base if base.endswith("/v1") else f"{base}/v1"
+    assert adapter.base_url == expected
+    assert adapter.name == "deepseek"
 
 
-async def test_fallback_recording_notes_the_serving_model(monkeypatch, tmp_path):
+async def test_fallback_recording_notes_the_serving_model(tmp_path):
     """Transparency: the recording keeps the configured primary AND the model
     that actually answered, so telemetry can attribute cost correctly."""
-    calls: list[str] = []
-
-    async def acompletion(**kwargs):
-        calls.append(kwargs["model"])
-        if kwargs["model"] == "primary":
-            raise RuntimeError("quota exhausted")
-        return _FakeResponse("ok")
-
-    _stub_litellm(monkeypatch, acompletion)
-    router = ModelRouter(
-        BlobStore(tmp_path / "blobs"),
-        model="primary",
-        mode="live",
-        recordings=RecordingStore(tmp_path / "recordings"),
-        fallbacks=("fallback-a",),
+    a = SimulatedProvider("a")
+    b = SimulatedProvider("b")
+    a.script("primary", "server_error")
+    router = _live_router(
+        tmp_path, {"a": a, "b": b},
+        model="a/primary", fallbacks=("b/fallback-a",),
     )
 
     resp = await router.complete([{"role": "user", "content": "hi"}], purpose="planner")
+    assert resp.model == "b/fallback-a"
 
     digest = request_digest(
-        "primary",
+        "a/primary",
         [{"role": "user", "content": "hi"}],
         0.0,
         router.max_tokens_for("planner"),
     )
     record = router.recordings.get(digest)
-    assert record["model"] == "primary"
-    assert record["model_served"] == "fallback-a"
-    assert resp.model == "fallback-a"
+    assert record["model"] == "a/primary"
+    assert record["model_served"] == "b/fallback-a"
+    # The routing envelope explains WHY the fallback happened.
+    assert record["routing"]["reason"] == "fallback_after_failure"
+    assert record["routing"]["selected"] == {"provider": "b", "model": "b/fallback-a"}
