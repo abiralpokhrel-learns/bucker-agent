@@ -153,6 +153,13 @@ class Settings:
         default_factory=lambda: int(_env("BUCKER_MAX_TOKENS_CRITIC", "600"))
     )
 
+    # --- memory system (harness layer) -------------------------------------
+    #: Consolidate finished tasks into semantic-memory facts automatically
+    #: (episodic -> semantic). Idempotent per task; disable with 0.
+    auto_consolidate: bool = field(
+        default_factory=lambda: _env("BUCKER_AUTO_CONSOLIDATE", "1") == "1"
+    )
+
     # --- api -------------------------------------------------------------
     api_token: str = field(default_factory=lambda: _env("BUCKER_API_TOKEN", "dev-token"))
 

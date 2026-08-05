@@ -62,6 +62,41 @@ def test_facts_are_git_ignored_by_default():
     assert "memory/" in gitignore.read_text(encoding="utf-8")
 
 
+def test_prune_dedupes_identical_facts_keeping_newest(tmp_path: Path):
+    store = MemoryStore(tmp_path / "memory")
+    store.add("tests run with pytest")
+    import time
+
+    time.sleep(0.01)
+    store.add("Tests run with PYTEST.")  # same normalized text, newer
+    assert store.count() == 2
+    removed = store.prune()
+    assert len(removed) == 1
+    remaining = store.list()
+    assert len(remaining) == 1
+    assert "PYTEST" in remaining[0]["text"]  # the newer one survived
+
+
+def test_prune_caps_overflow_keeping_newest(tmp_path: Path):
+    store = MemoryStore(tmp_path / "memory")
+    for i in range(5):
+        store.add(f"fact number {i} unique content")
+    removed = store.prune(limit=2)
+    assert len(removed) == 3
+    remaining = [f["text"] for f in store.list()]
+    assert any("fact number 4" in t for t in remaining)  # newest survives
+    assert not any("fact number 0" in t for t in remaining)
+
+
+def test_prune_never_merges_different_facts(tmp_path: Path):
+    store = MemoryStore(tmp_path / "memory")
+    store.add("tests run with pytest")
+    store.add("the model is ollama")
+    removed = store.prune()
+    assert removed == []
+    assert store.count() == 2
+
+
 # ------------------------------------------------------------ skills ----
 
 

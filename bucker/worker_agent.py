@@ -313,27 +313,35 @@ async def execute_task(
         if result is not None:
             # ---- self-critique loop: one bounded repair round --------------
             # Only for produced work with a diff to review; never for
-            # blocked/no_change_needed. A parse-failing critique skips the
-            # repair round (critic is a first pass, not a blocker). The
-            # extra model calls are recorded for cost attribution.
+            # blocked/no_change_needed. A parse-failing OR provider-failing
+            # critique skips the repair round — the safety net must never
+            # sink the task it protects. The extra model calls are recorded
+            # for cost attribution.
             if (
                 settings.enable_critique
                 and result.produced_work
                 and result.diff
             ):
-                critique = await _critique(router, task, workspace_view, result.diff)
-                if critique is not None:
-                    attempt.extra_calls.append(critique.response)
-                    attempt.critique_verdict = critique.verdict
-                    attempt.critique_issues = critique.issues
-                    if critique.wants_repair:
-                        repaired, repair_errors, repair_response = await _repair(
-                            router, task, critique, response.text
-                        )
-                        attempt.extra_calls.append(repair_response)
-                        attempt.repaired = True
-                        if repaired is not None:
-                            result = repaired  # use the repair, keep the attempt record
+                try:
+                    critique = await _critique(
+                        router, task, workspace_view, result.diff
+                    )
+                    if critique is not None:
+                        attempt.extra_calls.append(critique.response)
+                        attempt.critique_verdict = critique.verdict
+                        attempt.critique_issues = critique.issues
+                        if critique.wants_repair:
+                            repaired, _repair_errors, repair_response = await _repair(
+                                router, task, critique, response.text
+                            )
+                            if repair_response is not None:
+                                attempt.extra_calls.append(repair_response)
+                            attempt.repaired = True
+                            if repaired is not None:
+                                # use the repair, keep the attempt record
+                                result = repaired
+                except Exception:  # noqa: BLE001 — critique must never block
+                    pass
             # ----------------------------------------------------------------
             applied = None
             if apply and result.produced_work:

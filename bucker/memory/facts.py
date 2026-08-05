@@ -51,7 +51,9 @@ class MemoryStore:
         if not text:
             raise ValueError("fact text must not be empty")
         fact_id = str(uuid.uuid4())
-        created = datetime.now(UTC).isoformat(timespec="seconds")
+        # Microsecond resolution: prune()'s "keep newest" ordering must be
+        # stable even for facts added in the same clock second.
+        created = datetime.now(UTC).isoformat(timespec="microseconds")
         path = self.root / f"{fact_id}.md"
         path.write_text(
             f"## {fact_id}\n- text: {text}\n- source: {source}\n- created: {created}\n",
@@ -88,6 +90,34 @@ class MemoryStore:
 
     def count(self) -> int:
         return len(self.list())
+
+    # -------------------------------------------------------------- prune ----
+    def prune(self, limit: int = 200) -> list[str]:
+        """Self-curation (Hermes-style): bound the store.
+
+        Two passes, both conservative:
+          1. dedupe — facts whose normalized text is IDENTICAL keep only
+             the newest (never merges different facts);
+          2. cap — beyond ``limit``, oldest facts are removed.
+        Returns the ids removed. A memory that grows forever dilutes
+        context injection, so this is the harness's garbage collector.
+        """
+        removed: list[str] = []
+        seen: dict[str, str] = {}
+        for fact in sorted(self.list(), key=lambda f: f["created"], reverse=True):
+            sig = re.sub(r"[^a-z0-9]+", " ", fact["text"].lower()).strip()
+            if sig in seen:
+                removed.append(fact["id"])
+                self.remove(fact["id"])
+            else:
+                seen[sig] = fact["id"]
+
+        overflow = sorted(self.list(), key=lambda f: f["created"])[:-limit] \
+            if limit > 0 else []
+        for fact in overflow:
+            removed.append(fact["id"])
+            self.remove(fact["id"])
+        return removed
 
     # ------------------------------------------------------------ context ----
     def context_for(self, objective: str, limit: int = 5) -> list[dict]:

@@ -256,6 +256,24 @@ async def test_critique_parse_failure_skips_repair(sandbox):
     assert router.purposes == ["worker", "critic"]
 
 
+async def test_critique_provider_failure_never_sinks_task(sandbox):
+    """A critic model call that RAISES must degrade to no-critique, and the
+    original diff must still be used (safety net protects itself)."""
+
+    class ExplodingCriticRouter(FakeRouter):
+        async def complete(self, messages, *, purpose, **kwargs):
+            if purpose == "critic":
+                raise RuntimeError("provider exploded")
+            return await super().complete(messages, purpose=purpose, **kwargs)
+
+    router = ExplodingCriticRouter([json.dumps(PRODUCED)])
+    outcome = await execute_task(router, TASK, sandbox, apply=False)
+    assert outcome.attempts[0].critique_verdict is None
+    assert outcome.attempts[0].repaired is False
+    assert outcome.result.diff == PRODUCED["diff"]  # task survived
+    assert router.purposes == ["worker"]  # critic raised before recording
+
+
 async def test_critique_disabled_via_config(sandbox, monkeypatch):
     """BUCKER_ENABLE_CRITIQUE=0 restores the old single-call loop."""
     from bucker.config import settings

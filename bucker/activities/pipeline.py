@@ -242,12 +242,35 @@ async def run_verifier(task_id: str, task_dict: dict, result_dict: dict,
 
 # ------------------------------------------------------------- transitions --
 @activity.defn
-async def record_decision(task_id: str, decision_dict: dict, attempt: int) -> None:
+async def consolidate_task_memory(task_id: str) -> dict:
+    """Episodic -> semantic memory: distill a finished task into facts.
+
+    Idempotent (marker-per-task). Failures are swallowed — memory must
+    never break the task it remembers. The workflow calls this once per
+    terminal outcome.
+    """
+    from bucker.config import settings
+
+    if not settings.auto_consolidate:
+        return {"skipped": True, "reason": "auto_consolidate disabled"}
+    from bucker.memory.consolidate import consolidate_task
+    from bucker.memory.facts import MemoryStore
+
+    store = await get_store()
+    try:
+        result = await consolidate_task(UUID(task_id), store, MemoryStore())
+    except Exception as exc:  # noqa: BLE001
+        return {"skipped": True, "reason": f"consolidation error: {type(exc).__name__}"}
+    return result.as_dict()
+
+
+@activity.defn
+async def record_decision(task_id: str, decision: dict, attempt: int) -> None:
     """Write the policy's decision into the log before acting on it."""
     store = await get_store()
     tid = UUID(task_id)
-    action = decision_dict["action"]
-    reason = decision_dict["reason"]
+    action = decision["action"]
+    reason = decision["reason"]
 
     event = {
         Action.RETRY: EventType.RETRY_SCHEDULED,

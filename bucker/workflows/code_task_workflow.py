@@ -19,6 +19,7 @@ smeared through orchestration code where they cannot be tested.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -28,6 +29,7 @@ from temporalio.common import RetryPolicy
 with workflow.unsafe.imports_passed_through():
     from bucker.activities.pipeline import (
         choose_adaptive_strategy,
+        consolidate_task_memory,
         evaluate_policy,
         record_decision,
         run_verifier,
@@ -122,11 +124,25 @@ class CodeTaskWorkflow:
             **self._opts(2),
         )
         self._phase = "halted"
+        await self._remember(task_id)
         return {
             "status": "halted",
             "attempts": self._attempt,
             "reason": decision["reason"],
         }
+
+    async def _remember(self, task_id: str) -> None:
+        """Episodic -> semantic memory: distill this run into durable facts.
+
+        Fire-and-forget with a short timeout — a memory failure must never
+        fail the task it is remembering.
+        """
+        with contextlib.suppress(Exception):
+            await workflow.execute_activity(
+                consolidate_task_memory,
+                args=[task_id],
+                start_to_close_timeout=timedelta(seconds=60),
+            )
 
     @workflow.run
     async def run(self, inp: CodeTaskInput) -> dict:
@@ -203,11 +219,13 @@ class CodeTaskWorkflow:
 
             if action is Action.COMPLETE:
                 self._phase = "completed"
+                await self._remember(inp.task_id)
                 return {"status": "completed", "attempts": attempt,
                         "verdict": last_verdict}
 
             if action is Action.ESCALATE:
                 self._phase = "needs_human_review"
+                await self._remember(inp.task_id)
                 return {"status": "needs_human_review", "attempts": attempt,
                         "reason": decision["reason"], "verdict": last_verdict}
 
