@@ -89,9 +89,13 @@ async def deliver(message: str) -> dict[str, Any]:
 
     payload = _payload_for(message)
     try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(payload["url"])
+        path = parsed.path or "/"
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(
-                payload["url"].split("/")[2], 443,
+                parsed.hostname, parsed.port or 443,
                 ssl=ssl.create_default_context(),
             ),
             timeout=10,
@@ -99,8 +103,7 @@ async def deliver(message: str) -> dict[str, Any]:
         try:
             body = json.dumps(payload["body"]).encode()
             req = (
-                f"POST {payload['url'].split('api.telegram.org', 1)[-1] or '/'} "
-                f"HTTP/1.1\r\nHost: {payload['url'].split('/')[2]}\r\n"
+                f"POST {path} HTTP/1.1\r\nHost: {parsed.hostname}\r\n"
                 f"Content-Type: application/json\r\n"
                 f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
             ).encode() + body

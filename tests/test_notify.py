@@ -95,3 +95,32 @@ async def test_notify_activity_noop_when_unconfigured(monkeypatch):
                                                "attempts": 1})
     assert result["delivered"] is False
     assert result["reason"] == "not configured"
+
+
+def test_payload_for_webhook_and_telegram(monkeypatch):
+    """The request target must be origin-form for ANY host (regression:
+    generic webhooks used to build an absolute-URI request line)."""
+    from bucker.config import settings
+    from bucker.core.notify import _payload_for
+
+    original = (settings.notify_webhook_url,
+                settings.telegram_bot_token, settings.telegram_chat_id)
+    try:
+        object.__setattr__(settings, "notify_webhook_url", "https://hooks.example.com/x")
+        object.__setattr__(settings, "telegram_bot_token", "")
+        object.__setattr__(settings, "telegram_chat_id", "")
+        p = _payload_for("hi")
+        assert p["kind"] == "webhook"
+        assert p["url"] == "https://hooks.example.com/x"
+
+        object.__setattr__(settings, "notify_webhook_url", "")
+        object.__setattr__(settings, "telegram_bot_token", "123:ABC")
+        object.__setattr__(settings, "telegram_chat_id", "42")
+        p = _payload_for("hi")
+        assert p["kind"] == "telegram"
+        assert p["url"].endswith("/sendMessage")
+        assert p["body"] == {"chat_id": "42", "text": "hi"}
+    finally:
+        object.__setattr__(settings, "notify_webhook_url", original[0])
+        object.__setattr__(settings, "telegram_bot_token", original[1])
+        object.__setattr__(settings, "telegram_chat_id", original[2])

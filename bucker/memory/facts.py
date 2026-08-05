@@ -22,13 +22,18 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 _FACT_RE = re.compile(
     r"^## ([0-9a-f-]{36})\n- text: (.*)\n- source: (.*)\n- created: (.*)$",
     re.M,
 )
+
+#: Last issued created-timestamp. Windows clocks tick at ~15.6ms, so
+#: datetime.now() can repeat; prune()'s "keep newest" ordering needs
+#: strictly increasing timestamps to be deterministic.
+_LAST_CREATED: list[str] = []
 
 
 class MemoryStore:
@@ -51,9 +56,16 @@ class MemoryStore:
         if not text:
             raise ValueError("fact text must not be empty")
         fact_id = str(uuid.uuid4())
-        # Microsecond resolution: prune()'s "keep newest" ordering must be
-        # stable even for facts added in the same clock second.
+        # Strictly-increasing created timestamps: prune()'s "keep newest"
+        # ordering must be deterministic even when the system clock ticks
+        # at ~15.6ms (Windows) and two adds land in the same tick.
         created = datetime.now(UTC).isoformat(timespec="microseconds")
+        if _LAST_CREATED and created <= _LAST_CREATED[0]:
+            last = datetime.fromisoformat(_LAST_CREATED[0])
+            created = (last + timedelta(microseconds=1)).isoformat(
+                timespec="microseconds"
+            )
+        _LAST_CREATED[:] = [created]
         path = self.root / f"{fact_id}.md"
         path.write_text(
             f"## {fact_id}\n- text: {text}\n- source: {source}\n- created: {created}\n",
