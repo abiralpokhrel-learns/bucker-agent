@@ -758,6 +758,27 @@ def test_models_page_renders_tiers(client):
     assert "local" in resp.text and "free" in resp.text and "paid" in resp.text
 
 
+def test_task_page_shows_critique_and_graph_panels():
+    """The harness loop features are visible on the task page (iter 9)."""
+    from bucker.api.dashboard import render_task_dashboard
+
+    events = [
+        {"event_type": "CritiqueCompleted", "payload": {
+            "attempt": 1, "verdict": "needs_fix",
+            "issues": ["bad hunk count"], "repaired": True}},
+        {"event_type": "GraphStepCompleted", "payload": {
+            "step_id": "add-sub", "status": "completed"}},
+    ]
+    html = render_task_dashboard(
+        "11111111-2222-3333-4444-555555555555",
+        {"status": "completed", "plan": None, "last_verification": {}},
+        events,
+    )
+    assert "Self-critique loop" in html
+    assert "needs_fix" in html and "repaired" in html
+    assert "Graph steps" in html and "add-sub" in html
+
+
 # --------------------------------------------------- memory / skills API --
 
 

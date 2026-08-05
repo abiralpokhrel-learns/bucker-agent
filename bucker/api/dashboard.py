@@ -1113,6 +1113,35 @@ setTimeout(function () { location.reload(); }, 4000);
     timeline = "".join(_event_row(e) for e in events) or \
         '<li class="muted" style="padding-left:26px">no events yet</li>'
 
+    # Harness loop panels (iter 9): the self-critique verdicts and the
+    # graph's step table, surfaced from the event stream.
+    critiques = [e["payload"] for e in events
+                 if e.get("event_type") == "CritiqueCompleted"]
+    graph_steps = [e["payload"] for e in events
+                   if e.get("event_type") == "GraphStepCompleted"
+                   and e["payload"].get("step_id") != "__graph__"]
+    harness_html = ""
+    if critiques:
+        rows = "".join(
+            f'<div class="status-row"><span class="label">critique '
+            f'(attempt {c.get("attempt", "?")})</span>'
+            f'<span class="detail">{c.get("verdict", "?")}'
+            + (" <b>repaired</b>" if c.get("repaired") else "")
+            + '</span><span class="detail muted">'
+            + _esc("; ".join(c.get("issues", [])[:2]))
+            + "</span></div>"
+            for c in critiques
+        )
+        harness_html += f'<div class="panel"><h2>Self-critique loop</h2>{rows}</div>'
+    if graph_steps:
+        rows = "".join(
+            f'<div class="status-row"><span class="label mono">'
+            f'{_esc(str(s.get("step_id", "?")))}</span>'
+            f'<span class="detail">{_esc(str(s.get("status", "?")))}</span></div>'
+            for s in graph_steps
+        )
+        harness_html += f'<div class="panel"><h2>Graph steps</h2>{rows}</div>'
+
     last_verification = state.get("last_verification")
     verify_html = ""
     if last_verification:
@@ -1181,6 +1210,8 @@ setTimeout(function () { location.reload(); }, 4000);
 </dl></div>
 
 {plan_html}
+
+{harness_html}
 
 <div class="panel"><h2>Event stream <span class="hint">the audit trail — state is a replay of this</span></h2>
 <ul class="timeline">{timeline}</ul></div>
