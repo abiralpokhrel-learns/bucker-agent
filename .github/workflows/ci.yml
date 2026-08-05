@@ -43,6 +43,11 @@ jobs:
           fi
           echo "ok - no hardcoded model names"
 
+      - name: Build bucker-sandbox image
+        # Tests docker-run real sandbox containers; CI has no image until
+        # this builds it (the local smoke run builds it on demand, CI can't).
+        run: docker build -t bucker-sandbox:latest -f Dockerfile.sandbox .
+
       - name: Tests
         env:
           BUCKER_TEST_DATABASE_URL: postgresql://postgres:dev@localhost:5432/bucker
@@ -91,6 +96,10 @@ jobs:
         env:
           BUCKER_DATABASE_URL: postgresql://postgres:dev@localhost:5432/bucker
         run: uv run python -m bucker.cli migrate --admin-url postgresql://postgres:dev@localhost:5432/bucker
+
+      - name: Build bucker-sandbox image
+        # The M1 crash test runs the task through a real sandbox container.
+        run: docker build -t bucker-sandbox:latest -f Dockerfile.sandbox .
 
       - name: M1 — kill -9 mid-task, resume, zero data loss
         env:

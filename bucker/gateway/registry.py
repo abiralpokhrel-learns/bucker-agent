@@ -21,7 +21,7 @@ never a billing source of truth. Unknown price => cost_usd stays None
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from bucker.config import settings
@@ -297,4 +297,7 @@ def _build_model(
 
 
 def _replace(model: GatewayModel, **changes: Any) -> GatewayModel:
-    return GatewayModel(**{**model.__dict__, **changes})
+    # asdict, NOT model.__dict__: GatewayModel is a slots dataclass, so
+    # __dict__ raises AttributeError (regression hit in CI, where the
+    # default model id is not in the catalog and this branch runs).
+    return GatewayModel(**{**asdict(model), **changes})

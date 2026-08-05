@@ -324,8 +324,29 @@ async def test_usage_recorded_for_success(sim):
     )
 
 
+def test_default_registry_handles_unknown_chain_id(monkeypatch):
+    """CI regression: with no .env, settings.model falls back to a bare id
+    that is NOT in the catalog; the chain-seeding path (registry.py
+    `_replace`) must not explode on the slots dataclass. This exact path
+    crashed every ModelRegistry.default() in CI."""
+    from bucker.config import settings as s
+
+    orig_model = s.model
+    orig_fallbacks = s.model_fallbacks
+    try:
+        object.__setattr__(s, "model", "custom/unknown-model")
+        object.__setattr__(s, "model_fallbacks", ("another/unknown",))
+        reg = ModelRegistry.default()
+        assert reg.get("custom/unknown-model") is not None
+        assert reg.get("another/unknown") is not None
+        assert reg.config_version()  # the routing envelope hash works too
+    finally:
+        object.__setattr__(s, "model", orig_model)
+        object.__setattr__(s, "model_fallbacks", orig_fallbacks)
+
+
 # --------------------------------------------------------------------------
-# 4. Routing policies (spec §9)
+# Routing proofs (spec §48)
 # --------------------------------------------------------------------------
 
 async def test_free_only_policy(sim):

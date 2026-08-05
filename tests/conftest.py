@@ -71,11 +71,18 @@ async def pool():
     migrations = Path(__file__).resolve().parent.parent / "migrations"
     admin = await asyncpg.connect(TEST_DSN)
     try:
+        # Truncate BEFORE migrations: migration files DROP+ADD constraints
+        # (003, 005), and a stale row from a previous run whose status is
+        # not yet in an intermediate constraint would make the ADD fail.
+        # On a fresh database the tables do not exist yet — that's fine.
+        from contextlib import suppress
+
+        with suppress(asyncpg.UndefinedTableError):
+            await admin.execute(
+                "TRUNCATE telemetry, snapshots, events, candidates, tasks CASCADE"
+            )
         for path in sorted(migrations.glob("*.sql")):
             await admin.execute(path.read_text())
-        await admin.execute(
-            "TRUNCATE telemetry, snapshots, events, candidates, tasks CASCADE"
-        )
     finally:
         await admin.close()
 

@@ -6,6 +6,25 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI sandbox image** — GitHub Actions never built `bucker-sandbox:latest`;
+  tests that docker-run real sandbox containers failed with "Unable to find
+  image", which then cascaded into `schedule_failed` transitions. Both CI
+  jobs (test + crash-resume) now build the image from `Dockerfile.sandbox`
+  before running.
+- **`GatewayModel.__dict__` crash** — `_replace()` used `model.__dict__`
+  on a slots dataclass, raising AttributeError on every
+  `ModelRegistry.default()` in CI (where the default model id is not in
+  the catalog). Now uses `dataclasses.asdict`; regression test simulates
+  the no-`.env` chain.
+- **`tasks_status_check` rejected `schedule_failed`** — the scheduler and
+  API write it (`api/app.py`, `core/tasks.py`), but migrations 001/003 did
+  not allow it, so the writes violated the CHECK on a real database
+  (exposed in CI). Migration 005 adds it (idempotent drop-then-add);
+  tripwire + real-DB tests. The test DB fixture now truncates BEFORE
+  migrations so constraint re-runs never see stale rows.
+
 ### Added
 
 - **ModelRouter-v2 bridge** — the internal inference path (planner /
