@@ -309,6 +309,41 @@ planner and worker prompts. A failed verification run can be consolidated
 into a durable fact and a *skill proposal* — self-improvement, but a human
 always says yes before a skill is created.
 
+Memory is self-curating: finished tasks are consolidated into facts
+automatically (BUCKER_AUTO_CONSOLIDATE), and the store is bounded by a
+dedupe+cap pass:
+
+```bash
+bucker memory status   # audit: counts by source, oldest/newest
+bucker memory prune    # dedupe identical facts + cap the store
+```
+
+## Human-in-the-loop
+
+When the verifier cannot pass and the policy escalates, the task lands in
+`needs_human_review` — and the human is the judge. Approve or reject it
+with a note; the verdict is append-only and the task becomes
+`human_approved` / `human_rejected`, deliberately distinct from machine
+verdicts so the audit trail can never confuse the two.
+
+```bash
+curl -X POST http://localhost:8000/tasks/<id>/approve?note=looks+right
+curl -X POST http://localhost:8000/tasks/<id>/reject?note=wrong+approach
+```
+
+The task dashboard shows approve/reject buttons on escalated tasks, the
+self-critique verdicts per attempt, and (for graphs) each step's status.
+
+## Delivery (where the user is)
+
+Scheduled and graph runs announce their outcome to a webhook or Telegram
+— opt-in, no-op when unconfigured:
+
+```
+TELEGRAM_BOT_TOKEN=...   TELEGRAM_CHAT_ID=...   # Telegram delivery
+BUCKER_NOTIFY_WEBHOOK_URL=https://...           # generic webhook
+```
+
 ## Tracing (LLM ops)
 
 Every run is a trajectory: model calls with tokens and cost, tool calls,
