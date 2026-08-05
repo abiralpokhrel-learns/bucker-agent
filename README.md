@@ -1,52 +1,65 @@
 # bucker-agent
 
-> **GitHub:** <https://github.com/abiralpokhrel-learns/bucker-agent>
+[![status](https://img.shields.io/badge/status-prototype-orange)](BUILD_PLAN.md)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
+[![stack](https://img.shields.io/badge/stack-Postgres%20%2B%20Temporal-purple)](docs/OPERATIONS.md)
 
-**Nothing is trusted until it's verified, nothing is lost when it crashes,
-nothing overspends silently, and nothing changes in production until it's
-proven better.**
+```
+      ____________________________
+     |  BUCKER-AGENT             |
+     |  code robots that verify  |
+     |  their own work           |
+     |___________________________|
+         \____________________/
+          |  your tasks      |
+          |  ----------------|------->
+         _v__________________v_
+        |______________________|
+         \____________________/
 
-bucker-agent is a durable execution and evaluation platform for AI agents.
-It is not another agent framework — it is the layer *underneath* one. You
-bring your own agent loop; bucker makes it crash-proof, verification-gated,
-cost-bounded, and benchmarkable.
+        "nothing is trusted until it's verified"
+```
 
-The LLM is the replaceable part. Swap it for a stronger model next year and
-the platform works the same way. The durability, verification, and
+**bucker-agent is a durable execution + evaluation platform for AI agents.**
+You bring the agent loop; bucker makes it crash-proof, verification-gated,
+cost-bounded, and benchmarkable. The LLM is the replaceable part — swap it
+next year and the platform works the same. Durability, verification, and
 evidence-based improvement is what the system actually *is*.
 
-> **Status: prototype (pre-1.0).** All 40 BUILD_PLAN steps have a first
-> implementation, but several subsystems are unproven in production: the
-> benchmark gate, promotion pipeline, and replay regression gate have no
-> published live numbers yet — M2 is a go/no-go gate precisely because of
-> that. What is demonstrated: the durable core (M1, via the crash test) and
-> plan→work→verify end to end (smoke run, below). Treat everything beyond
-> that as experimental until live benchmark evidence exists. See
-> [`BUILD_PLAN.md`](BUILD_PLAN.md) for the roadmap and which steps are
-> ticked.
+## Why bucker-agent?
 
----
+| Symbol | Promise |
+|---|---|
+| 🧾 | **Everything is an event.** The append-only log is the truth — state is a *replay* of history, and crashes just re-derive it. |
+| 🔍 | **Nothing is trusted until it's verified.** The AI's opinion never counts — real tests in an isolated sandbox decide. |
+| 💰 | **Nothing overspends silently.** Budgets are enforced *before* spending, and unknown costs fail closed. |
+| 🔁 | **Nothing is lost when it crashes.** Temporal resumes mid-task; every step replays deterministically. |
+| 🤝 | **It asks instead of lying.** Failing tasks escalate to a human — `human_approved` is a different status than a machine pass. |
+| 🧠 | **It remembers.** Finished tasks distill into facts and skills it injects next time (self-pruning, yours, local). |
+| 📦 | **It can't escape.** The sandbox has no network and no privileges — even hostile code stays contained. |
 
-## What it does
+> **Status: prototype (pre-1.0).** All 40 [BUILD_PLAN](BUILD_PLAN.md)
+> steps have a first implementation, but the benchmark gate has no
+> published live numbers yet (M2 is the go/no-go gate). Demonstrated:
+> the durable core (M1 crash-resume, live), plan→work→verify end to end
+> (live smoke runs), graph orchestration, human-in-the-loop, and the
+> hardening pass. Treat everything beyond that as experimental.
 
-1. **Everything is an event; the event log is the truth.** No "current
-   state" is stored as the primary thing — state is a replay of history.
-   Crashes aren't catastrophic: the system re-derives where it was and picks
-   up. The `events` table is append-only *at the database permission level*,
-   not by convention.
-2. **A Planner turns a fuzzy goal into a strict, typed contract** (task
-   type, objective, constraints, budget, deadline, verifier). Validation
-   failures are recorded as events, never silently dropped.
-3. **A Worker executes — and its output is never trusted on its own.**
-4. **A domain-specific Verifier checks the result.** Code gets tested and
-   linted. There is no universal "is this good?" function; each domain plugs
-   in its own objective check. Repeated failure escalates to a human instead
-   of being forced through.
-5. **Every step is logged with cost, time, and outcome, and can be replayed
-   exactly.** Determinism comes from record-and-replay of stored model/tool
-   outputs — never by re-invoking the model.
-6. **Improvements are proposed, benchmarked, and only promoted if they
-   win.** No live self-modification. Human approval, rollback retained.
+## Contents
+
+- [Quickstart](#quickstart-5-minutes)
+- [How it works](#how-it-works)
+- [Run the pipeline end to end](#run-the-pipeline-end-to-end)
+- [Choose a model](#choose-a-model)
+- [Multi-step task graphs](#multi-step-task-graphs-graph-engineering)
+- [Memory & skills](#memory--skills-the-harness-layer)
+- [Human-in-the-loop](#human-in-the-loop)
+- [Recurring tasks (schedules)](#recurring-tasks-schedules)
+- [Prove the durability claim yourself](#prove-the-durability-claim-yourself)
+- [Let other agents use bucker (MCP)](#let-other-agents-use-bucker-mcp)
+- [CLI](#cli)
+- [Roadmap](BUILD_PLAN.md) · [Operations](docs/OPERATIONS.md) · [Security](SECURITY.md)
 
 ## Quickstart (5 minutes)
 
@@ -80,7 +93,52 @@ uv run uvicorn bucker.api.app:app --port 8123
 it the worker replays stored recordings — free, but fails on any prompt it
 has never seen.)
 
-### Windows notes (native)
+## How it works
+
+```
+  YOUR TASK
+     |
+     v
+  [ PLANNER ]  -> typed contract: objective, budget, deadline, verifier
+     |
+     v
+  [ WORKER  ]  -> writes the code (in the sandbox: no network, no admin)
+     |
+     v
+  [ CRITIC  ]  -> a cheap self-review of the diff; bounded repair round
+     |
+     v
+  [VERIFIER]  -> runs the REAL tests in Docker — the only judge
+     |
+     +-- passed -------------->  COMPLETED  ✅
+     +-- failed (retries) ----->  NEEDS_HUMAN_REVIEW  🤝 (you decide)
+     +-- out of budget/time --->  HALTED  ⏹️ (never silent)
+```
+
+Every stage writes an event (who, what, cost, when). The dashboard streams
+them live. Full pipeline details in
+[Run the pipeline end to end](#run-the-pipeline-end-to-end).
+
+## Features
+
+- 🧠 **Planner** — turns a fuzzy goal into a strict typed contract
+- 🛠️ **Worker** — executes inside a network-isolated Docker sandbox
+- 🔍 **Verifiers** — domain-specific: code gets tested + linted; failures escalate to a human, never forced through
+- 💰 **Budgets** — pre-spend guard, per-step estimates, unknown cost = fail closed
+- 🧾 **Append-only event store** — enforced at the *database permission level*
+- 🔁 **Deterministic replay** — record-and-replay of stored outputs, never re-invoking the model
+- ⏰ **Schedules** — recurring tasks with fresh IDs per run (Temporal scheduler)
+- 🕸️ **Task graphs** — DAGs with parallel waves and dependency joins
+- 🧠 **Memory & skills** — durable facts + procedures, self-pruning, user-owned
+- 🤝 **Human-in-the-loop** — approve/reject with notes; auditable separation of human vs machine verdicts
+- 📣 **Delivery** — webhook / Telegram when a task finishes
+- 🎛️ **Dashboard** — live event stream, replay, usage panel, system health
+- 🩺 **Self-healing** — `bucker reconcile` re-schedules tasks that never started
+- 🗄️ **Backups** — one-command Postgres + blobstore dump with a restore drill
+
+
+
+## Windows notes (native)
 
 Native Windows works, but the two failure modes below have bitten real
 setups — both are avoidable:
