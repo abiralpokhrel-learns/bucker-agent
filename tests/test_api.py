@@ -142,12 +142,19 @@ def test_create_task_returns_task_id(client):
     assert data["status"] == "pending"
 
 
-def test_create_task_defaults_to_real_pipeline(client):
+def test_create_task_defaults_to_real_pipeline(client, monkeypatch):
     """The default task_type starts CodeTaskWorkflow, not the demo workflow.
 
-    Temporal is unreachable in tests, so workflow_id is None — but the task
-    must be created and the request must not fail.
+    Temporal is deliberately unreachable here (hermetic patch), so
+    workflow_id is None — but the task must be created and the request
+    must not fail.
     """
+    from temporalio.client import Client
+
+    async def _connect(*a, **k):
+        raise ConnectionError("connection refused")
+
+    monkeypatch.setattr(Client, "connect", _connect)
     resp = client.post(
         "/tasks",
         params={"objective": "add a subtract function to calc.py", "max_retries": 3},
@@ -155,7 +162,7 @@ def test_create_task_defaults_to_real_pipeline(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["task_type"] == "code_change"
-    assert data["workflow_id"] is None  # Temporal down in tests, not fatal
+    assert data["workflow_id"] is None  # Temporal down: registered, not scheduled
 
 
 def test_create_task_accepts_guardrails(client):
@@ -549,8 +556,17 @@ def _inject_fakes_with_task():
     mod._blobs = None
 
 
-def test_rerun_creates_a_new_task_with_same_objective():
+def test_rerun_creates_a_new_task_with_same_objective(monkeypatch):
     import sys
+
+    from temporalio.client import Client
+
+    # Hermetic: Temporal down must not fail the rerun — the task row
+    # survives, the workflow simply isn't scheduled.
+    async def _connect(*a, **k):
+        raise ConnectionError("connection refused")
+
+    monkeypatch.setattr(Client, "connect", _connect)
 
     _inject_fakes_with_task()
     api_app = sys.modules["bucker.api.app"].app
@@ -561,7 +577,7 @@ def test_rerun_creates_a_new_task_with_same_objective():
             data = resp.json()
             assert data["task_id"] != data["original_task_id"]
             assert data["status"] == "pending"
-            assert data["workflow_id"] is None  # Temporal down in tests, not fatal
+            assert data["workflow_id"] is None  # Temporal down: registered, not scheduled
     finally:
         _clear_fakes()
 
@@ -571,8 +587,14 @@ def test_rerun_404_for_unknown_task(client):
     assert resp.status_code == 404
 
 
-def test_cancel_requires_temporal(client):
+def test_cancel_requires_temporal(client, monkeypatch):
     """Without Temporal reachable, cancel explains rather than faking success."""
+    from temporalio.client import Client
+
+    async def _connect(*a, **k):
+        raise ConnectionError("connection refused")
+
+    monkeypatch.setattr(Client, "connect", _connect)
     resp = client.post(f"/tasks/{uuid4()}/cancel")
     assert resp.status_code == 409
     assert "could not cancel" in resp.json()["detail"]
@@ -902,8 +924,15 @@ def test_new_task_page_renders_template_cards(client):
     assert "applyTemplate" in resp.text
 
 
-def test_schedules_list_503_when_temporal_down(client):
+def test_schedules_list_503_when_temporal_down(client, monkeypatch):
     """Schedules live in Temporal; without it the API says so clearly."""
+    from temporalio.client import Client
+
+    # Hermetic: simulate Temporal down regardless of ambient infra.
+    async def _connect(*a, **k):
+        raise ConnectionError("connection refused")
+
+    monkeypatch.setattr(Client, "connect", _connect)
     resp = client.get("/schedules")
     assert resp.status_code == 503
     assert "Temporal unreachable" in resp.json()["detail"]
@@ -922,8 +951,14 @@ def test_schedules_create_rejects_unknown_template(client):
     assert "unknown template" in resp.json()["detail"]
 
 
-def test_schedules_page_renders_without_temporal(client):
+def test_schedules_page_renders_without_temporal(client, monkeypatch):
     """The page degrades gracefully — an alert, not a 500."""
+    from temporalio.client import Client
+
+    async def _connect(*a, **k):
+        raise ConnectionError("connection refused")
+
+    monkeypatch.setattr(Client, "connect", _connect)
     resp = client.get("/schedules-page")
     assert resp.status_code == 200
     assert "Temporal is not reachable" in resp.text

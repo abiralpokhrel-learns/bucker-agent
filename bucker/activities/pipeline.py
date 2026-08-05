@@ -288,6 +288,20 @@ async def record_decision(task_id: str, decision: dict, attempt: int) -> None:
         {"attempt": attempt, "reason": reason},
         idempotency_key=f"{task_id}:decision-{attempt}-{action}",
     )
+    # The event is the source of truth; tasks.status is a denormalized
+    # cache for listing/queries. Keep the cache honest at terminal events.
+    terminal_status = {
+        EventType.TASK_COMPLETED: "completed",
+        EventType.NEEDS_HUMAN_REVIEW: "needs_human_review",
+        EventType.BUDGET_EXCEEDED: "halted",
+        EventType.DEADLINE_EXCEEDED: "halted",
+    }.get(event)
+    if terminal_status is not None:
+        async with store._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE tasks SET status = $1 WHERE id = $2",
+                terminal_status, tid,
+            )
 
 
 @activity.defn
