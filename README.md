@@ -61,7 +61,7 @@ evidence-based improvement is what the system actually *is*.
 - [Prove the durability claim yourself](#prove-the-durability-claim-yourself)
 - [Let other agents use bucker (MCP)](#let-other-agents-use-bucker-mcp)
 - [CLI](#cli)
-- [Roadmap](BUILD_PLAN.md) · [Operations](docs/OPERATIONS.md) · [Security](SECURITY.md)
+- [Usage guide](docs/USAGE.md) · [Roadmap](BUILD_PLAN.md) · [Operations](docs/OPERATIONS.md) · [Security](SECURITY.md)
 
 ## Quickstart (1 minute)
 
