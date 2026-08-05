@@ -441,6 +441,43 @@ async def cmd_memory_search(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_memory_status(args: argparse.Namespace) -> int:
+    """Audit the semantic-memory store: health + provenance."""
+    from collections import Counter
+
+    from bucker.memory.facts import MemoryStore
+
+    store = MemoryStore()
+    facts = store.list()
+    by_source = Counter(f.get("source", "?") for f in facts)
+    print(f"facts: {len(facts)}")
+    for source, count in sorted(by_source.items(), key=lambda x: -x[1]):
+        print(f"  {count:>4}  from {source}")
+    if facts:
+        print(f"oldest: {facts[-1]['created']}  newest: {facts[0]['created']}")
+    else:
+        print("empty — tasks consolidate automatically (BUCKER_AUTO_CONSOLIDATE)")
+    print("\nhint: `bucker memory prune` dedupes identical facts and caps the store")
+    return 0
+
+
+async def cmd_memory_prune(args: argparse.Namespace) -> int:
+    from bucker.memory.facts import MemoryStore
+
+    store = MemoryStore()
+    removed = store.prune(limit=args.limit)
+    if not removed:
+        print("nothing to prune — store is already clean")
+        return 0
+    print(f"removed {len(removed)} facts (dedupe + cap at {args.limit}):")
+    for fid in removed[:10]:
+        print(f"  {fid}")
+    if len(removed) > 10:
+        print(f"  ... and {len(removed) - 10} more")
+    print(f"remaining: {store.count()}")
+    return 0
+
+
 async def cmd_memory_consolidate(args: argparse.Namespace) -> int:
     from bucker.memory.consolidate import consolidate_task
     from bucker.memory.facts import MemoryStore
@@ -701,6 +738,11 @@ def build_parser() -> argparse.ArgumentParser:
     mem_co.add_argument("task_id")
     mem_co.add_argument("--force", action="store_true")
     mem_co.set_defaults(func=cmd_memory_consolidate)
+    mem_st = mem_sub.add_parser("status", help="audit the store: counts by source")
+    mem_st.set_defaults(func=cmd_memory_status)
+    mem_pr = mem_sub.add_parser("prune", help="dedupe identical facts + cap the store")
+    mem_pr.add_argument("--limit", type=int, default=200)
+    mem_pr.set_defaults(func=cmd_memory_prune)
 
     sk = sub.add_parser("skills", help="procedural memory: skills the worker follows")
     sk_sub = sk.add_subparsers(dest="skill_cmd", required=True)

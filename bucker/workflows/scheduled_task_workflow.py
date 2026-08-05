@@ -15,6 +15,7 @@ tick is retried exactly once and the schedule is durable across restarts.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -22,6 +23,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
+    from bucker.activities.notify import notify_task_result
     from bucker.activities.schedule import register_scheduled_task
     from bucker.workflows.code_task_workflow import CodeTaskInput, CodeTaskWorkflow
 
@@ -73,4 +75,11 @@ class ScheduledTaskWorkflow:
             # No task_queue: the child inherits the parent's queue, so the
             # schedule uses whatever queue the worker is registered on.
         )
+        # Gateway (iter 7): announce the run's outcome where the user is.
+        with contextlib.suppress(Exception):
+            await workflow.execute_activity(
+                notify_task_result,
+                args=["task", {**result, "task_id": task_id}],
+                start_to_close_timeout=timedelta(seconds=30),
+            )
         return {**result, "task_id": task_id, "scheduled": True}

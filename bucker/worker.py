@@ -18,6 +18,7 @@ from bucker.activities.demo import (
     run_step,
 )
 from bucker.activities.graph import record_graph_step, register_graph_step
+from bucker.activities.notify import notify_task_result
 from bucker.activities.pipeline import (
     choose_adaptive_strategy,
     consolidate_task_memory,
@@ -70,6 +71,7 @@ async def main() -> None:
             # Graphs (multi-step DAGs)
             register_graph_step,
             record_graph_step,
+            notify_task_result,
         ],
     )
     await worker.run()

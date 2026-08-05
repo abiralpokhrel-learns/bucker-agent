@@ -14,6 +14,7 @@ Purity rules (determinism discipline):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -25,6 +26,7 @@ with workflow.unsafe.imports_passed_through():
         record_graph_step,
         register_graph_step,
     )
+    from bucker.activities.notify import notify_task_result
     from bucker.contracts.graph import parse_spec, topological_waves, validate_graph
     from bucker.workflows.code_task_workflow import (
         CodeTaskInput,
@@ -132,9 +134,17 @@ class GraphWorkflow:
                   {"steps": len(results), "failed": sorted(failed)}],
             start_to_close_timeout=timedelta(seconds=30),
         )
-        return {
+        final = {
             "graph_task_id": inp.graph_task_id,
             "status": "completed",
             "failed": sorted(failed),
             "steps": results,
         }
+        # Gateway (iter 7): announce the graph's outcome where the user is.
+        with contextlib.suppress(Exception):
+            await workflow.execute_activity(
+                notify_task_result,
+                args=["graph", final],
+                start_to_close_timeout=timedelta(seconds=30),
+            )
+        return final

@@ -160,6 +160,19 @@ class Settings:
         default_factory=lambda: _env("BUCKER_AUTO_CONSOLIDATE", "1") == "1"
     )
 
+    # --- delivery (gateway) -------------------------------------------------
+    #: Generic webhook URL for task-completion notifications. Empty = off.
+    notify_webhook_url: str = field(
+        default_factory=lambda: _env("BUCKER_NOTIFY_WEBHOOK_URL", "")
+    )
+    #: Telegram delivery (requires BOTH token and chat id). Empty = off.
+    telegram_bot_token: str = field(
+        default_factory=lambda: _env("TELEGRAM_BOT_TOKEN", "")
+    )
+    telegram_chat_id: str = field(
+        default_factory=lambda: _env("TELEGRAM_CHAT_ID", "")
+    )
+
     # --- api -------------------------------------------------------------
     api_token: str = field(default_factory=lambda: _env("BUCKER_API_TOKEN", "dev-token"))
 
