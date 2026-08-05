@@ -53,14 +53,12 @@ dev = [
 [project.scripts]
 bucker = "bucker.cli:main"
 
-# TODO(pre-publish): swap in the real repository URL before publishing.
-# The owner slug below is a pre-publish placeholder, not a real account.
 [project.urls]
-Homepage = "https://github.com/bucker-agent/bucker-agent"
-Repository = "https://github.com/bucker-agent/bucker-agent"
-Issues = "https://github.com/bucker-agent/bucker-agent/issues"
-Documentation = "https://github.com/bucker-agent/bucker-agent#readme"
-Changelog = "https://github.com/bucker-agent/bucker-agent/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/abiralpokhrel-learns/bucker-agent"
+Repository = "https://github.com/abiralpokhrel-learns/bucker-agent"
+Issues = "https://github.com/abiralpokhrel-learns/bucker-agent/issues"
+Documentation = "https://github.com/abiralpokhrel-learns/bucker-agent#readme"
+Changelog = "https://github.com/abiralpokhrel-learns/bucker-agent/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]

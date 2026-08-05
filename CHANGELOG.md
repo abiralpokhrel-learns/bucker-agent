@@ -65,7 +65,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   migration rollback policy, incident runbook, M2 procedure, pre-publish
   checklist); doctor warns when `BUCKER_API_TOKEN` is the dev default;
   Docker images pinned by digest (`postgres:16`, `python:3.12-slim`);
-  `<your-org>` placeholder URLs replaced (TODO'd pre-publish slugs);
+  placeholder URLs replaced with the real repository
+  (github.com/abiralpokhrel-learns/bucker-agent);
   M1 crash-resume gate re-run live (exit 0).
 
 - **Hardening review — enforced behavior, not documentation**:

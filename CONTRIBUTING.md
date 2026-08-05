@@ -2,6 +2,9 @@
 
 Thanks for wanting to help. This file tells you where to start.
 
+**Repo:** <https://github.com/abiralpokhrel-learns/bucker-agent> — issues,
+PRs, and discussions live there.
+
 ## The one rule
 
 **Files marked `[HAND]` in their module docstring must not be regenerated casually.** These are the parts where a subtle bug silently poisons everything downstream: the event store, the state fold, the replay engine, the sandbox config, and the stats module. Read every line. If you can't explain a line in those files, rewrite it until you can.
@@ -11,7 +14,7 @@ Everything else — configs, dashboards, plumbing — is fine to generate, but t
 ## Getting started
 
 ```bash
-git clone <repo-url> && cd bucker-agent
+git clone https://github.com/abiralpokhrel-learns/bucker-agent && cd bucker-agent
 cp .env.example .env
 docker compose up -d                   # Postgres
 temporal server start-dev              # UI at http://localhost:8233
