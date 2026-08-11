@@ -17,10 +17,28 @@ Write-Host " =========================================="
 Write-Host ""
 
 # ---------------- 1. find or install Python ----------------
+# bucker needs Python 3.11 - 3.13 (>=3.11,<3.14; tested on 3.11/3.12).
+# A python on PATH may be the WRONG version (e.g. 3.14) — check the
+# version and, if out of range, install the supported 3.12.
+function Test-BuckerPython {
+    param($Exe)
+    if (-not $Exe) { return $false }
+    try {
+        & $Exe -c "import sys; sys.exit(0 if (3,11) <= sys.version_info[:2] < (3,14) else 1)" 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+
 $py = Get-Command python -ErrorAction SilentlyContinue
-if (-not $py) { $py = Get-Command py -ErrorAction SilentlyContinue }
-if (-not $py) {
-    Write-Host " [1/4] Python not found - attempting to install it..."
+if (-not (Test-BuckerPython $py.Source)) { $py = Get-Command py -ErrorAction SilentlyContinue }
+if (-not (Test-BuckerPython $py.Source)) {
+    if ($py) {
+        Write-Host " [1/4] Python found but version is unsupported:"
+        & $py.Source --version
+        Write-Host "       bucker needs Python 3.11-3.13, so installing 3.12..."
+    } else {
+        Write-Host " [1/4] Python not found - attempting to install it..."
+    }
     $installer = Join-Path $env:TEMP "python-installer.exe"
     try {
         Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe" -OutFile $installer
@@ -29,16 +47,16 @@ if (-not $py) {
         Write-Host "       done. Re-checking..."
     } catch {
         Write-Host " ERROR: could not download Python."
-        Write-Host " Install it manually from https://www.python.org/downloads/"
+        Write-Host " Install Python 3.12 manually from https://www.python.org/downloads/"
         Write-Host " (check `"Add Python to PATH`" during install), then run this file again."
         Read-Host " Press Enter to exit..."
         exit 1
     }
     $py = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $py) { $py = Get-Command py -ErrorAction SilentlyContinue }
+    if (-not (Test-BuckerPython $py.Source)) { $py = Get-Command py -ErrorAction SilentlyContinue }
 }
-if (-not $py) {
-    Write-Host " ERROR: Python still not found after install."
+if (-not (Test-BuckerPython $py.Source)) {
+    Write-Host " ERROR: no supported Python (3.11-3.13) found after install."
     Write-Host " Open a NEW terminal and run this file again."
     Read-Host " Press Enter to exit..."
     exit 1

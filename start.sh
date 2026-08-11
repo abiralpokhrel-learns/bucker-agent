@@ -45,6 +45,7 @@ echo " =========================================="
 echo
 
 # ---------------- 1. find Python ----------------
+# bucker needs Python 3.11 - 3.13 (>=3.11,<3.14; tested on 3.11/3.12).
 PYTHON=""
 for candidate in python3 python; do
     if command -v "$candidate" >/dev/null 2>&1; then
@@ -55,15 +56,16 @@ done
 
 if [ -z "$PYTHON" ]; then
     echo " [1/4] Python not found."
-    echo "       Install Python 3.11+ from https://www.python.org/downloads/"
-    echo "       (or: brew install python / apt install python3), then re-run ./start.sh"
+    echo "       Install Python 3.11-3.13 from https://www.python.org/downloads/"
+    echo "       (or: brew install python@3.12 / apt install python3.12), then re-run ./start.sh"
     exit 1
 fi
 
-# verify version
-VERSION_OK=$("$PYTHON" -c 'import sys; print(1 if sys.version_info >= (3, 11) else 0)')
-if [ "$VERSION_OK" != "1" ]; then
-    echo " [1/4] Python too old ($($PYTHON --version 2>&1)); need 3.11+."
+# verify version: 3.11 <= ver < 3.14
+if ! "$PYTHON" -c 'import sys; sys.exit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+    echo " [1/4] Unsupported Python version ($($PYTHON --version 2>&1)); need 3.11-3.13."
+    echo "       Install Python 3.12 (brew install python@3.12 / apt install python3.12),"
+    echo "       then re-run ./start.sh"
     exit 1
 fi
 echo " [1/4] Python found: $($PYTHON --version 2>&1)"

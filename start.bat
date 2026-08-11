@@ -22,13 +22,25 @@ echo  ==========================================
 echo.
 
 rem ---------------- 1. find or install Python ----------------
+rem bucker needs Python 3.11 - 3.13 (>=3.11,<3.14; tested on 3.11/3.12).
+rem A python.exe on PATH may be the WRONG version (e.g. 3.14) — check the
+rem version and, if out of range, install the supported 3.12.
+
 set "PYTHON="
 where python >nul 2>nul && set "PYTHON=python"
-if defined PYTHON goto found_python
-where py >nul 2>nul && set "PYTHON=py"
-if defined PYTHON goto found_python
-
-echo  [1/4] Python not found - attempting to install it...
+if not defined PYTHON (
+    where py >nul 2>nul && set "PYTHON=py"
+)
+if defined PYTHON (
+    rem version gate: exit 0 when 3.11 <= ver < 3.14
+    "%PYTHON%" -c "import sys; sys.exit(0 if (3,11) <= sys.version_info[:2] < (3,14) else 1)" >nul 2>&1
+    if not errorlevel 1 goto found_python
+    echo  [1/4] Python found but version is unsupported: %PYTHON%
+    "%PYTHON%" --version
+    echo        bucker needs Python 3.11-3.13, so installing 3.12...
+) else (
+    echo  [1/4] Python not found - attempting to install it...
+)
 echo        (this downloads the official Python installer)
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe' -OutFile '%TEMP%\python-installer.exe'"
 if errorlevel 1 goto python_download_failed
@@ -37,20 +49,24 @@ echo        installing Python 3.12...
 echo        done. Re-checking...
 set "PYTHON="
 where python >nul 2>nul && set "PYTHON=python"
-if defined PYTHON goto found_python
-where py >nul 2>nul && set "PYTHON=py"
-if defined PYTHON goto found_python
+if not defined PYTHON (
+    where py >nul 2>nul && set "PYTHON=py"
+)
+if defined PYTHON (
+    "%PYTHON%" -c "import sys; sys.exit(0 if (3,11) <= sys.version_info[:2] < (3,14) else 1)" >nul 2>&1
+    if not errorlevel 1 goto found_python
+)
 goto python_still_missing
 
 :python_download_failed
 echo  ERROR: could not download Python.
-echo  Install it manually from https://www.python.org/downloads/
+echo  Install Python 3.12 manually from https://www.python.org/downloads/
 echo  (check "Add Python to PATH" during install), then run this file again.
 pause
 exit /b 1
 
 :python_still_missing
-echo  ERROR: Python still not found after install.
+echo  ERROR: no supported Python (3.11-3.13) found after install.
 echo  Open a NEW terminal and run this file again.
 pause
 exit /b 1
