@@ -68,17 +68,35 @@ evidence-based improvement is what the system actually *is*.
 ### Zero-infrastructure path (recommended for first try)
 
 **You need:** Python 3.11+ installed. Nothing else — no Docker, no
-Postgres, no Temporal, no uv. `start.sh`/`start.bat` installs the Python
-package with plain pip; `bucker lite` uses a SQLite database and runs
-tasks in-process, so the whole platform comes up on a bare laptop.
+Postgres, no Temporal, no uv. The launcher installs the Python package
+with plain pip; `bucker lite` uses a SQLite database and runs tasks
+in-process, so the whole platform comes up on a bare laptop.
+
+**Windows** (PowerShell or cmd — double-click `start.bat` in File Explorer
+works too):
+
+```powershell
+git clone https://github.com/abiralpokhrel-learns/bucker-agent
+cd bucker-agent
+.\start.bat
+# or: .\start.ps1
+```
+
+**macOS / Linux:**
 
 ```bash
 git clone https://github.com/abiralpokhrel-learns/bucker-agent && cd bucker-agent
-./start.sh          # Windows: start.bat  (double-click works)
-#  1. finds/installs Python if missing
-#  2. creates .venv + pip install -e .
-#  3. starts bucker lite -> dashboard opens at http://localhost:8123
+./start.sh
 ```
+
+The launcher: 1. finds/installs Python if missing → 2. creates `.venv` +
+`pip install -e .` → 3. starts `bucker lite` → dashboard opens at
+http://localhost:8123.
+
+> **On Windows, use `start.bat` — not `start.sh`.** `start.sh` is the
+> macOS/Linux script; PowerShell will not run it (it errors with "The term
+> '/start.sh' is not recognized" or "cannot be loaded"). If you see that
+> error, you're in the right folder — just run `.\start.bat` instead.
 
 Demo tasks (task_type=demo) work with zero API keys and no model
 configuration. `code_change` tasks need a model key in `.env`
@@ -91,14 +109,14 @@ Docker stack below is the isolated, production path.
 
 ### Full stack (Docker + Temporal — durable, isolated)
 
-**You need:** Docker Desktop, running. That's it — `start.sh` installs
-`uv` if it's missing, and `bucker dev` bootstraps everything else on
-first run (`.env` + token, Postgres, migrations), then starts the stack.
+The launchers above run **lite mode** (SQLite, in-process, no Docker).
+The full stack — Temporal orchestration, Postgres event store, Docker
+sandbox — is bootstrapped by `bucker dev` (needs Docker Desktop running;
+it installs `uv` itself):
 
 ```bash
 git clone https://github.com/abiralpokhrel-learns/bucker-agent && cd bucker-agent
-./start.sh          # Windows: start.bat
-
+uv run python -m bucker.cli dev     # Windows PowerShell: use the uv command above
 # first run:  prerequisites -> .env + token -> Postgres -> migrations ->
 #             Temporal + worker + dashboard (opens in your browser)
 # later runs: just starts the stack

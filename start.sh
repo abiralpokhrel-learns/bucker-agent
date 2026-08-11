@@ -16,6 +16,27 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Windows guard: if this .sh is being run from PowerShell/cmd (e.g. someone
+# typed `./start.sh` or `/start.sh` on Windows), give the right command
+# instead of a cryptic failure.
+if [[ "${OS:-}" == "Windows_NT" || "$(uname -s 2>/dev/null || echo unknown)" == MINGW* ]]; then
+    echo
+    echo " =========================================="
+    echo "   This is the macOS/Linux launcher."
+    echo "   You are on Windows - use start.bat instead:"
+    echo
+    echo "       start.bat          (or double-click it)"
+    echo
+    echo "   If PowerShell won't run it: type the filename"
+    echo "   with .\\ in front, e.g.:"
+    echo
+    echo "       .\\start.bat"
+    echo " =========================================="
+    echo
+    read -r -p "Press Enter to exit... " || true
+    exit 0
+fi
+
 echo
 echo " =========================================="
 echo "   bucker-agent  -  lite mode"
