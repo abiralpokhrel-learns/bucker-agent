@@ -66,7 +66,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 rem A venv created by uv has no pip; bootstrap it if missing.
 if not exist ".venv\Scripts\pip.exe" (
-    echo        (bootstrapping pip in the virtualenv...)
+    echo        bootstrapping pip in the virtualenv...
     ".venv\Scripts\python.exe" -m ensurepip --upgrade >nul 2>&1
     if errorlevel 1 goto venv_failed
 )
