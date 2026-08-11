@@ -85,7 +85,11 @@ class Settings:
 
     # --- model router (step 14) -----------------------------------------
     #: Never hardcode a model name anywhere else in the codebase.
-    model: str = field(default_factory=lambda: _env("BUCKER_MODEL", "gpt-4o-mini"))
+    model: str = field(
+        default_factory=lambda: _env(
+            "BUCKER_MODEL", "deepseek/deepseek-v4-flash"
+        )
+    )
     #: Comma-separated fallback chain tried in order when the primary fails
     #: (provider down, key rejected, quota exhausted). Same spirit as a
     #: gateway's auto-fallback: a dead provider should not take down a task.

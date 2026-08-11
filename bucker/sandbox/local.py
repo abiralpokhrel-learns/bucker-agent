@@ -79,13 +79,22 @@ class LocalSandbox:
             raise SandboxError("sandbox not started")
 
         timeout = timeout_s or self.timeout_s
-        shell = "cmd /c" if sys.platform == "win32" else "sh -c"
+
+        # Pass the command as ONE argv element to the platform shell.
+        # ``create_subprocess_shell(f"sh -c {command}")`` word-splits it:
+        # ``sh -c echo hi`` runs ``echo`` with $0="hi" and prints nothing,
+        # and ``sh -c git apply ...`` runs bare ``git``. exec keeps the
+        # exact command string the caller intended.
+        shell_argv = (
+            ["cmd", "/c", command] if sys.platform == "win32"
+            else ["sh", "-c", command]
+        )
 
         loop = asyncio.get_running_loop()
         started = loop.time()
         try:
-            proc = await asyncio.create_subprocess_shell(
-                f"{shell} {command}",
+            proc = await asyncio.create_subprocess_exec(
+                *shell_argv,
                 cwd=str(self.workspace),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
