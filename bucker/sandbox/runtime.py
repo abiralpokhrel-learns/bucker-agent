@@ -26,6 +26,7 @@ without Docker, rather than being a claim in a comment.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shlex
 import uuid
 from dataclasses import dataclass, field
@@ -185,6 +186,16 @@ class DockerSandbox:
     ) -> None:
         self.workspace = Path(workspace)
         self.workspace.mkdir(parents=True, exist_ok=True)
+        # The container runs as uid 1000:1000 (no root inside the
+        # boundary). The workspace is bind-mounted from the host, whose
+        # owner may be any uid (GitHub Actions runners use 1001, Docker
+        # Desktop for Windows uses its own shim). Without an explicit
+        # chmod, uid 1000 cannot write the mount and `patch`/`git apply`
+        # fail with "Permission denied" / "Can't create temporary file".
+        # 0777 is safe here: the boundary is the container, not the
+        # directory, and the workspace holds only this task's files.
+        with contextlib.suppress(OSError):
+            self.workspace.chmod(0o777)
         self.image = image
         self.network = network
         self.timeout_s = timeout_s
