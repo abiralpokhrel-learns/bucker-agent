@@ -10,12 +10,45 @@ The workflow itself stays pure; this is where the side effects live.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from uuid import UUID, uuid4
 
 from bucker.config import settings
 from bucker.core.events import EventType
 from bucker.core.eventstore import EventStore
+
+#: In-flight lite-mode runners. Kept alive so the event loop never GCs a
+#: running task; the done-callback removes each entry when it finishes.
+_LITE_TASKS: set[asyncio.Task] = set()
+
+
+def _in_lite_mode(pool: Any) -> bool:
+    """True when the pool is a LitePool — the no-Docker/no-Temporal mode.
+
+    The pool type IS the mode: ``create_pool`` returns a LitePool for
+    ``sqlite:`` DSNs and an asyncpg pool otherwise, so checking the
+    concrete type is the single source of truth (no env var to drift).
+    Setting ``BUCKER_SANDBOX_MODE=local`` additionally turns off the
+    Docker sandbox; Temporal is never touched because the in-process
+    runner replaces it.
+    """
+    from bucker.lite.pool import LitePool
+
+    return isinstance(pool, LitePool)
+
+
+def _lite_task_for(task_id: str) -> asyncio.Task | None:
+    """Find the in-process runner task for a task id, if it is still running.
+
+    Lite mode spawns one asyncio task per task; the cancel endpoint uses
+    this to terminate it. Returns None when the task is unknown or done.
+    """
+    for task in _LITE_TASKS:
+        meta = getattr(task, "_bucker_meta", None)
+        if meta and meta.get("task_id") == task_id and not task.done():
+            return task
+    return None
 
 
 async def register_task(
@@ -159,21 +192,47 @@ async def create_task(
         budget_usd=budget_usd,
     )
 
-    # Start a Temporal workflow if Temporal is available; otherwise the
-    # task sits registered and the failure is recorded (not silent).
+    # Start the task. In lite mode (sqlite storage, no Temporal) the
+    # pipeline runs in-process as an asyncio task; otherwise a Temporal
+    # workflow is started. Either way the failure is recorded, never silent.
     workflow_id = None
     schedule_error: str | None = None
     try:
-        workflow_id = await start_task_workflow(
-            task_id,
-            objective=objective,
-            task_type=task_type,
-            budget_usd=budget_usd,
-            deadline_minutes=deadline_minutes,
-            max_retries=max_retries,
-            adaptive=adaptive,
-            graph_spec=graph_spec,
-        )
+        if _in_lite_mode(pool):
+            from bucker.lite.runner import run_task_lite
+
+            # Fire-and-track: the runner appends its own events. We hand
+            # back a synthetic workflow id so the response shape matches
+            # the Temporal path (workflow_id is a string or None).
+            task = asyncio.create_task(
+                run_task_lite(
+                    str(task_id),
+                    objective,
+                    task_type=task_type,
+                    budget_usd=budget_usd,
+                    deadline_minutes=deadline_minutes,
+                    max_retries=max_retries,
+                    adaptive=adaptive,
+                    graph_spec=graph_spec,
+                )
+            )
+            # Tag the task so the cancel endpoint can find it by task id.
+            object.__setattr__(task, "_bucker_meta", {"task_id": str(task_id)})
+            # Keep a reference so the event loop never GCs a running task.
+            _LITE_TASKS.add(task)
+            task.add_done_callback(_LITE_TASKS.discard)
+            workflow_id = f"lite-{task_id}"
+        else:
+            workflow_id = await start_task_workflow(
+                task_id,
+                objective=objective,
+                task_type=task_type,
+                budget_usd=budget_usd,
+                deadline_minutes=deadline_minutes,
+                max_retries=max_retries,
+                adaptive=adaptive,
+                graph_spec=graph_spec,
+            )
     except Exception as exc:  # noqa: BLE001 — a scheduling failure is visible, not silent
         # Hardening review: a swallowed scheduling error is a task black
         # hole. The task row EXISTS (registered) but no workflow is

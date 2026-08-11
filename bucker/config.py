@@ -66,6 +66,11 @@ class Settings:
     sandbox_image: str = field(
         default_factory=lambda: _env("BUCKER_SANDBOX_IMAGE", "bucker-sandbox:latest")
     )
+    #: "docker" (default, isolated containers) or "local" (lite mode: plain
+    #: host subprocesses in a scratch dir, NO isolation — trusted code only).
+    sandbox_mode: str = field(
+        default_factory=lambda: _env("BUCKER_SANDBOX_MODE", "docker")
+    )
 
     # --- temporal --------------------------------------------------------
     temporal_host: str = field(
@@ -102,6 +107,14 @@ class Settings:
     #: DeepSeek key (paid hosted models). Never printed.
     deepseek_api_key: str = field(
         default_factory=lambda: _env("DEEPSEEK_API_KEY", "")
+    )
+    #: Anthropic key (optional provider — Claude models). Never printed.
+    anthropic_api_key: str = field(
+        default_factory=lambda: _env("ANTHROPIC_API_KEY", "")
+    )
+    #: OpenAI key (optional provider — GPT models). Never printed.
+    openai_api_key: str = field(
+        default_factory=lambda: _env("OPENAI_API_KEY", "")
     )
     #: DeepSeek OpenAI-compatible endpoint (default is official).
     deepseek_base_url: str = field(
@@ -205,13 +218,18 @@ class Settings:
     #: Hard deadline for the whole inference attempt (routing + retries +
     #: fallbacks). The engine slices this budget across attempts: a request
     #: that allows 30s total cannot spend 20s on provider A and 20s on B.
+    #: Default 120s: the primary (deepseek-v4-flash) can take 20-55s alone,
+    #: and the fallback reserve (see gateway_fallback_reserve_s) must still
+    #: leave the chain a real slice.
     gateway_deadline_s: float = field(
-        default_factory=lambda: float(_env("BUCKER_GATEWAY_DEADLINE_S", "60"))
+        default_factory=lambda: float(_env("BUCKER_GATEWAY_DEADLINE_S", "120"))
     )
     #: Per-attempt provider timeout (connection + response). Never exceeds
-    #: the remaining deadline.
+    #: the remaining deadline. Default 60s so a slow-but-successful primary
+    #: response (deepseek 200s observed at 20-55s) is not cut off and
+    #: misclassified as unavailable.
     gateway_timeout_s: float = field(
-        default_factory=lambda: float(_env("BUCKER_GATEWAY_TIMEOUT_S", "30"))
+        default_factory=lambda: float(_env("BUCKER_GATEWAY_TIMEOUT_S", "60"))
     )
     #: Retryable failures (429/5xx/timeouts) get this many retries per
     #: candidate before the engine moves to the next candidate.

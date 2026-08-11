@@ -135,3 +135,43 @@ async def test_snapshot_store_matches_full_replay(pool, seeded_task):
 
     # And reading again through the snapshot path still matches.
     assert await snaps.get_state(seeded_task) == full
+
+
+async def test_record_failure_writes_terminal_event_and_status(pool, seeded_task, monkeypatch):
+    """Issue 1 regression: a permanently-failed activity must flip the
+    task row to 'failed', not leave it in_progress forever.
+
+    Previously an unhandled ActivityError crashed the workflow and the
+    API kept showing in_progress. record_failure is the terminal write
+    the workflow calls from _fail().
+    """
+    import bucker.activities.pipeline as pipeline
+
+    store = EventStore(pool)
+    async def _get_store():
+        return store
+    monkeypatch.setattr(pipeline, "get_store", _get_store)
+
+    # seeded_task fixture created the row; mark it in_progress like a
+    # task that is mid-flight when its activity permanently fails.
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = $1",
+            seeded_task,
+        )
+
+    await pipeline.record_failure(
+        str(seeded_task), "all 3 providers failed", attempt=1
+    )
+
+    # The terminal event landed in the stream...
+    events = await store.read_stream(seeded_task)
+    assert events[-1].event_type == EventType.TASK_FAILED
+    assert "all 3 providers failed" in events[-1].payload["reason"]
+
+    # ...and the denormalized status cache flipped to 'failed'.
+    async with pool.acquire() as conn:
+        status = await conn.fetchval(
+            "SELECT status FROM tasks WHERE id = $1", seeded_task
+        )
+    assert status == "failed"

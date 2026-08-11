@@ -51,11 +51,11 @@ from bucker.gateway.adapters import ProviderAdapter, RawCompletion, default_adap
 from bucker.gateway.circuit import CircuitRegistry
 from bucker.gateway.errors import (
     AllProvidersFailedError,
+    EmptyCompletionError,
     GatewayError,
     GatewayTimeoutError,
     InvalidRequestError,
     NoCandidatesError,
-    ProviderUnavailableError,
 )
 from bucker.gateway.models import (
     ROUTING_POLICIES,
@@ -70,6 +70,16 @@ log = logging.getLogger("bucker.gateway.engine")
 
 #: Minimum remaining budget for one more attempt; below this we stop trying.
 _MIN_ATTEMPT_S = 1.0
+
+#: Minimum slice of the request deadline reserved for the fallback chain.
+#: A slow primary (deepseek-v4-flash can take 20-55s and return HTTP 200
+#: with empty reasoning content) must not be able to consume the whole
+#: deadline and leave the fallbacks ~0s — that turns "primary slow" into
+#: "all 3 candidates failed". Each non-last candidate's attempt is capped
+#: so at least this much stays on the clock for the rest of the chain.
+#: Bounded to half the remaining time so a tiny deadline is not swallowed
+#: by an absolute reserve.
+_FALLBACK_RESERVE_S = 15.0
 
 
 @dataclass(slots=True)
@@ -230,16 +240,28 @@ class RouterEngine:
         decision = await self.plan(req)
         deadline = time.monotonic() + (req.deadline_s or self.deadline_s)
         started = time.monotonic()
+        candidates = self._candidate_models(decision)
 
-        for model in self._candidate_models(decision):
-            if time.monotonic() + _MIN_ATTEMPT_S > deadline:
+        for idx, model in enumerate(candidates):
+            # Reserve a slice of the deadline for the candidates still to
+            # come: a slow primary must not starve the fallback chain.
+            # Never reserve more than half the remaining time, so a tiny
+            # deadline is not swallowed by the absolute reserve.
+            remaining = deadline - time.monotonic()
+            reserve = (
+                min(_FALLBACK_RESERVE_S, remaining * 0.5)
+                if idx < len(candidates) - 1
+                else 0.0
+            )
+            if time.monotonic() + _MIN_ATTEMPT_S + reserve > deadline:
                 decision.attempts.append({
                     "provider": model.provider, "model": model.canonical_id,
                     "ok": False, "error_type": "deadline_exceeded",
                 })
                 break
             attempt_timeout = min(
-                req.timeout_s or self.timeout_s, deadline - time.monotonic()
+                req.timeout_s or self.timeout_s,
+                max(0.0, deadline - time.monotonic() - reserve),
             )
             try:
                 raw = await self._attempt(model, req, attempt_timeout, deadline)
@@ -292,11 +314,18 @@ class RouterEngine:
         forwarded = False
         tool_calls: list[dict] | None = None
         prompt_tokens = completion_tokens = 0
+        candidates = self._candidate_models(decision)
 
-        for model in self._candidate_models(decision):
+        for idx, model in enumerate(candidates):
             if forwarded:
                 break
-            if time.monotonic() + _MIN_ATTEMPT_S > deadline:
+            remaining = deadline - time.monotonic()
+            reserve = (
+                min(_FALLBACK_RESERVE_S, remaining * 0.5)
+                if idx < len(candidates) - 1
+                else 0.0
+            )
+            if time.monotonic() + _MIN_ATTEMPT_S + reserve > deadline:
                 decision.attempts.append({
                     "provider": model.provider, "model": model.canonical_id,
                     "ok": False, "error_type": "deadline_exceeded",
@@ -477,12 +506,24 @@ class RouterEngine:
         deadline: float,
     ) -> RawCompletion:
         """One candidate: up to ``1 + max_retries`` tries, retryable errors
-        only, exponential backoff + jitter, bounded by the deadline."""
+        only, exponential backoff + jitter, bounded by the deadline.
+
+        ``timeout_s`` is the candidate's TOTAL budget (the outer loop has
+        already sliced the request deadline and reserved time for the
+        fallback chain), so the internal retries share that budget instead
+        of each getting a fresh ``timeout_s`` — otherwise a slow primary
+        with retries could consume the whole request deadline and starve
+        every fallback.
+        """
         adapter = self.adapters[model.provider]
         last_err: GatewayError | None = None
         max_tries = 1 + self.max_retries
+        # The candidate's own deadline: the sliced budget, never beyond the
+        # request deadline. Internal retries draw from THIS, not the full
+        # request clock.
+        attempt_deadline = min(deadline, time.monotonic() + timeout_s)
         for try_i in range(max_tries):
-            remaining = deadline - time.monotonic()
+            remaining = attempt_deadline - time.monotonic()
             if remaining <= 0.5:
                 raise GatewayTimeoutError(
                     "request deadline exhausted",
@@ -505,11 +546,14 @@ class RouterEngine:
             else:
                 # Empty content with no tool call is a FAILED attempt, not
                 # a success: reasoning models (DeepSeek v4-flash) can spend
-                # the whole output budget on reasoning_content. Retryable,
-                # so the engine falls back — the guard the internal router
-                # used to have, now owned by the gateway for every adapter.
+                # the whole output budget on reasoning_content. NOT
+                # retryable per-candidate — the same prompt + budget on the
+                # same model reproduces the same empty result, so retrying
+                # only burns the deadline. Fall through to the next model
+                # immediately (the guard the internal router used to have,
+                # now owned by the gateway for every adapter).
                 if not raw.text.strip() and not raw.tool_calls:
-                    last_err = ProviderUnavailableError(
+                    last_err = EmptyCompletionError(
                         f"{model.provider} returned an empty completion with "
                         "no tool call (reasoning may have consumed the "
                         "output budget)",
@@ -521,7 +565,7 @@ class RouterEngine:
                 raise last_err
             if try_i < max_tries - 1:
                 backoff = 0.5 * (2 ** try_i) + random.uniform(0.0, 0.25)
-                wait = min(backoff, max(0.0, deadline - time.monotonic()))
+                wait = min(backoff, max(0.0, attempt_deadline - time.monotonic()))
                 if wait > 0:
                     await asyncio.sleep(wait)
         assert last_err is not None

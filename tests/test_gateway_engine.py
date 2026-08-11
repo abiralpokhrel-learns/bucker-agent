@@ -622,3 +622,50 @@ async def test_deadline_bounds_total_work(sim):
     assert "deadline_exceeded" in error_types
     # Candidate c was never reached once the deadline ran out.
     assert len(slow["c"].calls) == 0
+
+
+async def test_slow_empty_primary_does_not_starve_fallback():
+    """Regression: a primary that returns HTTP 200 with EMPTY content
+    (deepseek-v4-flash spending the output budget on reasoning_content)
+    must not burn the whole deadline retrying itself.
+
+    Old behavior: empty completion was classified retryable -> the same
+    model was retried (2 tries x timeout), consuming ~8.5s of a 10s
+    deadline; the fallback then got ~1.5s, less than its latency, and
+    every candidate failed. New behavior: empty completion is NOT
+    retryable per-candidate (same prompt + budget reproduces the same
+    empty result), so the engine moves to the fallback immediately and
+    the fallback's attempt gets the reserved slice of the deadline.
+    """
+
+    class _EmptyContentProvider(SimulatedProvider):
+        async def complete(self, req, model_id):
+            self.calls.append((model_id, req))
+            await asyncio.sleep(self.delay_s)
+            from bucker.gateway.adapters import RawCompletion
+
+            return RawCompletion(
+                text="", tool_calls=None, finish_reason="stop",
+                usage={"prompt_tokens": 5, "completion_tokens": 100},
+            )
+
+    deepseek = _EmptyContentProvider("deepseek").with_delay(4.0)
+    ollama = SimulatedProvider("ollama").with_delay(3.5)
+
+    engine = _engine(
+        _model("deepseek/deepseek-v4-flash", provider="deepseek", priority=0),
+        _model("ollama/qwen2.5-coder:7b", provider="ollama", priority=1),
+        adapters={"deepseek": deepseek, "ollama": ollama},
+        deadline_s=10.0,
+        timeout_s=4.0,
+        max_retries=1,
+    )
+
+    resp = await engine.complete(_req())
+
+    # Empty primary was tried exactly ONCE (no same-model retry) ...
+    assert [c[0] for c in deepseek.calls] == ["deepseek-v4-flash"]
+    # ... and the fallback got a real slice of the deadline.
+    assert [c[0] for c in ollama.calls] == ["qwen2.5-coder:7b"]
+    assert resp.model == "ollama/qwen2.5-coder:7b"
+    assert resp.from_fallback is True

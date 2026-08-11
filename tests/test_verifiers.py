@@ -44,8 +44,10 @@ PRODUCED = WorkerResult(
 class FakeSandbox:
     """Returns scripted command output. No Docker, no network, no model."""
 
-    def __init__(self, results: dict[str, ExecResult]) -> None:
+    def __init__(self, results: dict[str, ExecResult],
+                 files: dict[str, str] | None = None) -> None:
         self._results = results
+        self._files = dict(files or {})
         self.commands: list[str] = []
 
     async def exec(self, command: str, *, timeout_s: int | None = None) -> ExecResult:
@@ -54,6 +56,11 @@ class FakeSandbox:
             if pattern in command:
                 return result
         return ExecResult(command, 0, "", "", 1)
+
+    def read_file(self, relative_path: str) -> str:
+        if relative_path not in self._files:
+            raise FileNotFoundError(relative_path)
+        return self._files[relative_path]
 
 
 def exec_result(stdout: str, code: int = 0, timed_out: bool = False) -> ExecResult:
@@ -173,6 +180,49 @@ async def test_empty_suite_is_a_failure_not_a_pass():
 
     assert verdict.passed is False
     assert "no tests" in verdict.diagnostics.lower()
+
+
+async def test_no_tests_required_checks_files_not_suite():
+    """A contract with tests_required=false must not demand a test suite.
+
+    Regression: the live calc2.py task planned tests_required=true, listed
+    only calc2.py, and the worker (correctly, per the contract) created no
+    test file — the verifier then failed it with "no tests collected"
+    forever. With the fix, a no-tests contract verifies the listed files
+    exist instead of running pytest.
+    """
+    task = Task(
+        schema_version=1,
+        task_type="code_change",
+        objective="Create calc2.py containing mul(a, b)",
+        files=["calc2.py"],
+        verifier="python_test_runner",
+        constraints={"tests_required": False},
+    )
+    sandbox = FakeSandbox({}, files={"calc2.py": "def mul(a, b): return a * b\n"})
+    verdict = await PythonTestRunner().verify(task, PRODUCED, sandbox)
+
+    assert verdict.passed is True
+    assert sandbox.commands == [], "no-tests contract must not run pytest"
+    assert verdict.details["files_checked"] == ["calc2.py"]
+
+
+async def test_no_tests_required_fails_when_file_missing():
+    """The file check is real: a promised file that does not exist fails."""
+    task = Task(
+        schema_version=1,
+        task_type="code_change",
+        objective="Create calc2.py containing mul(a, b)",
+        files=["calc2.py"],
+        verifier="python_test_runner",
+        constraints={"tests_required": False},
+    )
+    sandbox = FakeSandbox({}, files={})  # worker produced nothing
+    verdict = await PythonTestRunner().verify(task, PRODUCED, sandbox)
+
+    assert verdict.passed is False
+    assert "missing" in verdict.diagnostics
+    assert verdict.details["missing"] == ["calc2.py"]
 
 
 async def test_timeout_is_a_failure():

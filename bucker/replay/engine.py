@@ -67,6 +67,15 @@ def workspace_for(task_id: str) -> Path:
     return Path(settings.blob_root).parent / "workspace" / task_id
 
 
+def _replay_sandbox(workspace: Path):
+    """DockerSandbox by default; LocalSandbox in lite mode (no Docker)."""
+    if settings.sandbox_mode == "local":
+        from bucker.sandbox.local import LocalSandbox
+
+        return LocalSandbox(workspace)
+    return DockerSandbox(workspace)
+
+
 def replay_workspace_for(task_id: UUID) -> Path:
     """Isolated replay workspace: a fresh copy of the original, per run.
 
@@ -189,7 +198,7 @@ async def replay_task(
     workspace = replay_workspace_for(task_id)
     shutil.copytree(original_workspace, workspace)
 
-    sandbox = DockerSandbox(workspace)
+    sandbox = _replay_sandbox(workspace)
     await sandbox.start()
     try:
         try:

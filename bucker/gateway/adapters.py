@@ -24,6 +24,7 @@ the network.
 from __future__ import annotations
 
 import abc
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -424,12 +425,35 @@ class OllamaAdapter(OpenAICompatAdapter):
             return False
 
 
+class OpenAIAdapter(OpenAICompatAdapter):
+    """OpenAI official API (optional provider — GPT models)."""
+
+    name = "openai"
+    base_url = "https://api.openai.com/v1"
+    _key = "openai_api_key"
+
+
+class AnthropicAdapter(OpenAICompatAdapter):
+    """Anthropic official API (optional provider — Claude models).
+
+    Anthropic exposes an OpenAI-compatible layer at ``/v1`` (same Bearer
+    auth, ``chat/completions`` payload), so the shared adapter handles
+    it with no protocol translation.
+    """
+
+    name = "anthropic"
+    base_url = "https://api.anthropic.com/v1"
+    _key = "anthropic_api_key"
+
+
 def default_adapters() -> dict[str, ProviderAdapter]:
     """The adapters the gateway knows by default."""
     return {
         "deepseek": DeepSeekAdapter(),
         "openrouter": OpenRouterAdapter(),
         "ollama": OllamaAdapter(),
+        "openai": OpenAIAdapter(),
+        "anthropic": AnthropicAdapter(),
     }
 
 
@@ -456,10 +480,16 @@ class SimulatedProvider(ProviderAdapter):
         self.name = name
         self.calls: list[tuple[str, InferenceRequest]] = []
         self._scripts: dict[str, str] = {}
+        self.delay_s: float = 0.0  # simulate a slow provider
 
     def script(self, model_id: str, scenario: str) -> SimulatedProvider:
         assert scenario in _SCENARIOS, f"unknown scenario {scenario!r}"
         self._scripts[model_id] = scenario
+        return self
+
+    def with_delay(self, delay_s: float) -> SimulatedProvider:
+        """Simulate provider latency (used to test deadline slicing)."""
+        self.delay_s = delay_s
         return self
 
     def available(self) -> bool:
@@ -470,6 +500,8 @@ class SimulatedProvider(ProviderAdapter):
 
     async def complete(self, req: InferenceRequest, model_id: str) -> RawCompletion:
         self.calls.append((model_id, req))
+        if self.delay_s > 0:
+            await asyncio.sleep(self.delay_s)
         scenario = self._scripts.get(model_id, "success")
         if scenario in ("success", "stream"):
             return RawCompletion(

@@ -32,12 +32,15 @@ with workflow.unsafe.imports_passed_through():
         consolidate_task_memory,
         evaluate_policy,
         record_decision,
+        record_failure,
         run_verifier,
         run_worker,
     )
     from bucker.activities.planner import plan_task
     from bucker.core.budget import pre_spend_decision
     from bucker.retry import Action
+
+from temporalio.exceptions import ActivityError
 
 
 @dataclass
@@ -146,6 +149,26 @@ class CodeTaskWorkflow:
                 start_to_close_timeout=timedelta(seconds=60),
             )
 
+    async def _fail(self, task_id: str, reason: str, attempt: int) -> dict:
+        """Terminal failure: record TASK_FAILED and return a failed state.
+
+        The retry policy decides between pass/retry/escalate/halt based on
+        VERIFICATION results. When an activity itself fails permanently
+        (all model providers down, sandbox unreachable, worker crash), no
+        policy decision exists — the workflow would previously crash with
+        an unhandled ActivityError, leaving the task row stuck in
+        ``in_progress`` forever. This records the terminal event so the API
+        and dashboard reflect reality.
+        """
+        with contextlib.suppress(Exception):
+            await workflow.execute_activity(
+                record_failure,
+                args=[task_id, reason, attempt],
+                **self._opts(2),
+            )
+        self._phase = "failed"
+        return {"status": "failed", "attempts": attempt, "reason": reason}
+
     @workflow.run
     async def run(self, inp: CodeTaskInput) -> dict:
         started = workflow.now()
@@ -153,9 +176,14 @@ class CodeTaskWorkflow:
 
         # --- plan --------------------------------------------------------
         self._phase = "planning"
-        task_dict, plan_cost, plan_unknown = await workflow.execute_activity(
-            plan_task, args=[inp.task_id, inp.objective], **self._opts(5)
-        )
+        try:
+            task_dict, plan_cost, plan_unknown = await workflow.execute_activity(
+                plan_task, args=[inp.task_id, inp.objective], **self._opts(5)
+            )
+        except ActivityError as exc:
+            return await self._fail(
+                inp.task_id, f"planning failed: {exc.message}", 0
+            )
         self._cost_usd += float(plan_cost or 0.0)
         self._cost_unknown = self._cost_unknown or bool(plan_unknown)
 
@@ -176,20 +204,39 @@ class CodeTaskWorkflow:
                 return await self._halt(inp.task_id, pre, attempt)
 
             self._phase = "working"
-            result_dict, worker_cost, worker_unknown = await workflow.execute_activity(
-                run_worker,
-                args=[inp.task_id, task_dict, attempt, self._current_model],
-                **self._opts(15),
-            )
+            try:
+                result_dict, worker_cost, worker_unknown = await workflow.execute_activity(
+                    run_worker,
+                    args=[inp.task_id, task_dict, attempt, self._current_model],
+                    **self._opts(15),
+                )
+            except ActivityError as exc:
+                # A permanently-failed worker activity (all providers down,
+                # sandbox broken) has no policy answer — record it as a
+                # terminal failure instead of crashing the workflow.
+                return await self._fail(
+                    inp.task_id,
+                    f"worker activity failed: {exc.message}",
+                    attempt,
+                )
             self._cost_usd += float(worker_cost or 0.0)
             self._cost_unknown = self._cost_unknown or bool(worker_unknown)
 
             self._phase = "verifying"
-            last_verdict = await workflow.execute_activity(
-                run_verifier,
-                args=[inp.task_id, task_dict, result_dict, attempt],
-                **self._opts(15),
-            )
+            try:
+                last_verdict = await workflow.execute_activity(
+                    run_verifier,
+                    args=[inp.task_id, task_dict, result_dict, attempt],
+                    **self._opts(15),
+                )
+            except ActivityError as exc:
+                # Verifier infra failure (sandbox unreachable, verifier
+                # crash) is not a verification result — terminal failure.
+                return await self._fail(
+                    inp.task_id,
+                    f"verifier activity failed: {exc.message}",
+                    attempt,
+                )
 
             # Record what this attempt was, for the adaptive history.
             self._passed.append(bool(last_verdict["passed"]))

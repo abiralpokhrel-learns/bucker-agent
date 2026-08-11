@@ -28,6 +28,13 @@ Rules:
 - "files" may be empty, which means the worker is unrestricted within its
   sandbox workspace. Prefer listing files when they are known — a narrower blast
   radius is easier to verify.
+- "constraints.tests_required" must be TRUE unless the task is trivial file
+  creation/editing with no behavior worth regression-testing (a one-line
+  constant, a doc file, a stub). When it IS true, "files" MUST also list the
+  test file(s) (e.g. test_calc.py next to calc.py) — the worker writes what the
+  contract lists, and the verifier fails a task whose contract demands tests
+  but names no test files. When it is false, the verifier checks the listed
+  files exist instead of running a suite.
 - Choose "budget_usd" and "deadline_minutes" proportionate to the work. These
   are hard ceilings enforced by the scheduler, not suggestions: the task is
   killed when it breaches them, so an unrealistically small budget guarantees

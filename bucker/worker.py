@@ -24,6 +24,7 @@ from bucker.activities.pipeline import (
     consolidate_task_memory,
     evaluate_policy,
     record_decision,
+    record_failure,
     run_verifier,
     run_worker,
 )
@@ -66,6 +67,7 @@ async def main() -> None:
             record_task_started, run_step, record_task_completed,
             # Phase 1 pipeline
             plan_task, run_worker, run_verifier, evaluate_policy, record_decision,
+            record_failure,
             consolidate_task_memory,
             # Phase 2 adaptive planning (M3)
             choose_adaptive_strategy,

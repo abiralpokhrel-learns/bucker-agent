@@ -82,6 +82,13 @@ class PythonTestRunner:
             # cheapest way to check it is to see whether the suite is green.
             pass
 
+        # The planner contract decides whether tests are part of "done".
+        # A trivial task (create a file, tweak a constant) with
+        # tests_required=false must NOT be failed for having no test suite
+        # — the deliverable is the listed files, and that is what we check.
+        if not task.constraints.tests_required:
+            return await self._verify_files_exist(task, sandbox, started)
+
         test_run = await sandbox.exec(self.test_command, timeout_s=self.timeout_s)
         output = (test_run.stdout + "\n" + test_run.stderr).strip()
         parsed = parse_pytest_output(output)
@@ -122,6 +129,64 @@ class PythonTestRunner:
             verifier=self.name,
             diagnostics=_diagnostics(passed, parsed, output),
             details=details,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+    async def _verify_files_exist(
+        self,
+        task: Task,
+        sandbox: DockerSandbox,
+        started: float,
+    ) -> VerificationResult:
+        """Verify a no-tests contract: the listed files exist and are non-empty.
+
+        When ``tests_required`` is false the deliverable IS the files — there
+        is no suite to run, and pytest's "no tests collected" (exit 5) is not
+        a meaningful failure for such a task. This checks the contract's
+        ``files`` list against the sandbox instead. An empty file list means
+        the planner deliberately left the worker unrestricted; we then accept
+        the worker's result summary (nothing concrete was promised to check).
+        """
+        missing = []
+        empty = []
+        for path in task.files:
+            try:
+                content = sandbox.read_file(path)
+            except Exception:  # noqa: BLE001 — file absent (any read error)
+                missing.append(path)
+                continue
+            if not content.strip():
+                empty.append(path)
+
+        problems = [f"missing: {p}" for p in missing] + [
+            f"empty: {p}" for p in empty
+        ]
+        if problems:
+            return VerificationResult(
+                passed=False,
+                verifier=self.name,
+                diagnostics="deliverable files missing: " + "; ".join(problems),
+                details={
+                    "tests_required": False,
+                    "missing": missing,
+                    "empty": empty,
+                    "reason": "no tests required; files checked instead",
+                },
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+        return VerificationResult(
+            passed=True,
+            verifier=self.name,
+            diagnostics=(
+                f"{len(task.files)} file(s) present (tests not required)"
+                if task.files
+                else "worker summary accepted (no files listed, tests not required)"
+            ),
+            details={
+                "tests_required": False,
+                "files_checked": list(task.files),
+            },
             duration_ms=int((time.perf_counter() - started) * 1000),
         )
 

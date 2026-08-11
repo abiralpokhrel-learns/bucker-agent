@@ -96,6 +96,22 @@ class GatewayTimeoutError(GatewayError):
     retryable = True
 
 
+class EmptyCompletionError(GatewayError):
+    """Provider returned HTTP 200 with no content and no tool call.
+
+    Reasoning models (DeepSeek v4-flash) can spend the whole output
+    budget on ``reasoning_content`` and return an empty message. The
+    response is well-formed — the model is NOT down — so retrying the
+    SAME model with the SAME prompt and budget reproduces the same empty
+    result and only burns the deadline. Not retryable per-candidate:
+    the engine moves straight to the next candidate, preserving the
+    request deadline for the fallback chain.
+    """
+
+    category = "empty_response"
+    status_code = 502
+
+
 class ContextLengthError(GatewayError):
     category = "context_length_error"
     status_code = 400

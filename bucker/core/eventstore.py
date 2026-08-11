@@ -170,8 +170,19 @@ class EventStore:
 
 
 # --------------------------------------------------------------- pooling ----
-async def create_pool(dsn: str, *, min_size: int = 1, max_size: int = 10) -> asyncpg.Pool:
-    """Create a pool with a jsonb codec so payloads come back as dicts."""
+async def create_pool(dsn: str, *, min_size: int = 1, max_size: int = 10):
+    """Create a pool with a jsonb codec so payloads come back as dicts.
+
+    ``sqlite:`` DSNs get a LitePool instead — the no-Docker/no-Postgres
+    storage backend (see bucker/lite/pool.py). The caller sees the same
+    surface (acquire/fetchrow/fetchval/execute) either way.
+    """
+    if dsn.startswith("sqlite:"):
+        from bucker.lite.pool import LitePool, sqlite_url_to_path
+
+        pool = LitePool(sqlite_url_to_path(dsn))
+        await pool.init_schema()
+        return pool
 
     async def _init(conn: asyncpg.Connection) -> None:
         await conn.set_type_codec(

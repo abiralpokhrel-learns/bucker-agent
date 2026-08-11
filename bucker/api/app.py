@@ -102,6 +102,13 @@ def _get_pool():
     return _pool
 
 
+def _in_lite_mode() -> bool:
+    """True when storage is sqlite — the no-Docker/no-Temporal mode."""
+    from bucker.lite.pool import LitePool
+
+    return _pool is not None and isinstance(_pool, LitePool)
+
+
 def _get_store():
     global _store
     if _store is None:
@@ -217,11 +224,19 @@ async def _startup():
         # instead of a bare 500.
         global _degraded
         _degraded = True
+        hint = (
+            "Fix Postgres (docker compose up -d) or run `uv run python -m "
+            "bucker.cli migrate`, then restart."
+        )
+        if settings.database_url.startswith("sqlite:"):
+            hint = (
+                "The sqlite database could not be opened — check the path "
+                "in BUCKER_DATABASE_URL and that the directory exists."
+            )
         print(
             f"ERROR: database unavailable at startup ({type(exc).__name__}: "
             f"{str(exc)[:120]}) — running DEGRADED. Data routes will answer "
-            "503. Fix Postgres (docker compose up -d) or run "
-            "`uv run python -m bucker.cli migrate`, then restart.",
+            f"503. {hint}",
             file=sys.stderr,
         )
     else:
@@ -534,13 +549,30 @@ async def cancel_task(
     task_id: UUID,
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
-    """Cancel a running task by terminating its Temporal workflow.
+    """Cancel a running task.
 
-    Requires Temporal to be reachable. There is deliberately no DB mutation
-    here — the workflow's termination is the source of truth, and the event
-    stream stays append-only.
+    Full mode: terminate the task's Temporal workflow. Lite mode: cancel
+    the in-process runner task. Either way the task's own machinery
+    records the terminal state — there is deliberately no DB mutation
+    here, and the event stream stays append-only.
     """
     _check_auth(creds, write=True)
+
+    if _in_lite_mode():
+        # Lite mode: the runner is an asyncio task we spawned in this
+        # process. Cancel it; run_task_lite's activity-level failure
+        # handling records a terminal event.
+        from bucker.core.tasks import _lite_task_for
+
+        task = _lite_task_for(str(task_id))
+        if task is None or task.done():
+            raise HTTPException(
+                status_code=404,
+                detail="no running task for this id (already finished, or never started)",
+            )
+        task.cancel()
+        await asyncio.wait_for(task, timeout=10)
+        return {"task_id": str(task_id), "cancelled": True}
 
     try:
         from temporalio.client import Client
@@ -664,8 +696,21 @@ async def _system_status() -> dict:
 
     # --- infrastructure --------------------------------------------------
     infra: dict = {}
+    lite_mode = settings.database_url.startswith("sqlite:")
     pool = _pool
-    if pool is None:
+    if lite_mode:
+        infra["storage"] = {
+            "ok": True, "detail": "sqlite (lite mode — no Postgres needed)"
+        }
+        infra["temporal"] = {
+            "ok": True,
+            "detail": "in-process runner (lite mode — no Temporal server)",
+        }
+        infra["docker"] = {
+            "ok": True,
+            "detail": "local subprocess sandbox (lite mode — no Docker)",
+        }
+    elif pool is None:
         infra["postgres"] = {"ok": False, "detail": "pool not initialised"}
     else:
         try:
@@ -678,28 +723,32 @@ async def _system_status() -> dict:
                 "detail": f"{type(exc).__name__}: {str(exc)[:120]}",
             }
 
-    try:
-        from bucker.sandbox.runtime import docker_available
+    if not lite_mode:
+        try:
+            from bucker.sandbox.runtime import docker_available
 
-        docker_ok = await asyncio.wait_for(docker_available(), timeout=10)
-        infra["docker"] = {"ok": docker_ok}
-        if docker_ok:
-            infra["sandbox_image"] = await _docker_image_exists(settings.sandbox_image)
-        else:
-            infra["sandbox_image"] = {"ok": False, "detail": "docker unavailable"}
-    except Exception as exc:
-        infra["docker"] = {"ok": False, "detail": f"{type(exc).__name__}: {str(exc)[:120]}"}
+            docker_ok = await asyncio.wait_for(docker_available(), timeout=10)
+            infra["docker"] = {"ok": docker_ok}
+            if docker_ok:
+                infra["sandbox_image"] = await _docker_image_exists(settings.sandbox_image)
+            else:
+                infra["sandbox_image"] = {"ok": False, "detail": "docker unavailable"}
+        except Exception as exc:
+            infra["docker"] = {"ok": False, "detail": f"{type(exc).__name__}: {str(exc)[:120]}"}
 
-    try:
-        from temporalio.client import Client
+        try:
+            from temporalio.client import Client
 
-        await asyncio.wait_for(
-            Client.connect(settings.temporal_host, namespace=settings.temporal_namespace),
-            timeout=3,
-        )
-        infra["temporal"] = {"ok": True, "detail": settings.temporal_host}
-    except Exception as exc:
-        infra["temporal"] = {"ok": False, "detail": f"{type(exc).__name__}: {str(exc)[:120]}"}
+            await asyncio.wait_for(
+                Client.connect(settings.temporal_host, namespace=settings.temporal_namespace),
+                timeout=3,
+            )
+            infra["temporal"] = {"ok": True, "detail": settings.temporal_host}
+        except Exception as exc:
+            infra["temporal"] = {
+                "ok": False,
+                "detail": f"{type(exc).__name__}: {str(exc)[:120]}",
+            }
     status["infra"] = infra
 
     # --- platform --------------------------------------------------------
@@ -752,6 +801,12 @@ async def create_schedule_endpoint(
 ) -> dict:
     """Create (or update) a recurring verified task on a cron schedule."""
     _check_auth(creds, write=True)
+    if _in_lite_mode():
+        raise HTTPException(
+            status_code=501,
+            detail="schedules are stored in Temporal and are not available "
+                   "in lite mode (run the full stack for scheduled tasks)",
+        )
     from bucker.core.schedules import ScheduleSpec, create_schedule
     from bucker.templates import UnknownTemplateError
 
@@ -779,6 +834,12 @@ async def list_schedules_endpoint(
 ) -> dict:
     """All schedules (from Temporal — the durable source of truth)."""
     _check_auth(creds)
+    if _in_lite_mode():
+        raise HTTPException(
+            status_code=501,
+            detail="schedules are stored in Temporal and are not available "
+                   "in lite mode (run the full stack for scheduled tasks)",
+        )
     from bucker.core.schedules import list_schedules
 
     try:
@@ -798,6 +859,12 @@ async def delete_schedule_endpoint(
 ) -> dict:
     """Delete a schedule. 404 when it did not exist."""
     _check_auth(creds, write=True)
+    if _in_lite_mode():
+        raise HTTPException(
+            status_code=501,
+            detail="schedules are stored in Temporal and are not available "
+                   "in lite mode (run the full stack for scheduled tasks)",
+        )
     from bucker.core.schedules import delete_schedule
 
     try:
@@ -1075,6 +1142,7 @@ async def create_graph(
         store,
         store._pool,
         objective=f"graph: {parsed.name} ({len(parsed.steps)} steps)",
+        task_type="graph",
         verifier="noop",
         graph_spec=spec,
     )

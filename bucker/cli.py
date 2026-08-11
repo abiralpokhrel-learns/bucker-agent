@@ -98,6 +98,17 @@ async def cmd_dev(args: argparse.Namespace) -> int:
     )
 
 
+async def cmd_lite(args: argparse.Namespace) -> int:
+    """Zero-infrastructure mode: Python only, sqlite storage, in-process
+    runner, local sandbox. No Docker, no Postgres, no Temporal, no uv."""
+    from bucker.lite import run_lite
+
+    return await run_lite(
+        open_browser=not args.no_browser,
+        port=args.port,
+    )
+
+
 async def cmd_start(args: argparse.Namespace) -> int:
     task_id = uuid4()
 
@@ -720,6 +731,15 @@ def build_parser() -> argparse.ArgumentParser:
     dev_p.add_argument("--no-browser", action="store_true",
                        help="do not auto-open the dashboard")
     dev_p.set_defaults(func=cmd_dev)
+
+    lite_p = sub.add_parser(
+        "lite", help="run the whole platform with nothing but Python — "
+                     "no Docker, no Postgres, no Temporal, no uv")
+    lite_p.add_argument("--no-browser", action="store_true",
+                        help="do not auto-open the dashboard")
+    lite_p.add_argument("--port", type=int, default=8123,
+                        help="dashboard port (default 8123)")
+    lite_p.set_defaults(func=cmd_lite)
 
     s = sub.add_parser("start", help="create a task and start its workflow")
     s.add_argument("--objective", default="demo task")

@@ -29,12 +29,23 @@ body { margin: 0; background: var(--bg); color: var(--text);
 a { color: var(--blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 20px 60px; }
-header.top { display: flex; align-items: baseline; gap: 14px;
+header.top { display: flex; align-items: center; gap: 18px;
              border-bottom: 1px solid var(--border); padding-bottom: 14px;
-             margin-bottom: 22px; }
-header.top h1 { margin: 0; font-size: 20px; letter-spacing: -0.02em; }
-header.top .tag { color: var(--muted); font-size: 12.5px; }
-header.top .spacer { flex: 1; }
+             margin-bottom: 22px; flex-wrap: wrap; }
+header.top .brand { font-size: 17px; font-weight: 700; letter-spacing: -0.02em;
+                    background: linear-gradient(90deg, var(--blue), var(--purple));
+                    -webkit-background-clip: text; background-clip: text;
+                    color: transparent; white-space: nowrap; }
+header.top .brand:hover { text-decoration: none; opacity: .9; }
+header.top .links { display: flex; gap: 2px; flex-wrap: wrap; flex: 1; }
+.nav-link { color: var(--muted); font-size: 13px; padding: 6px 11px;
+            border-radius: 8px; }
+.nav-link:hover { color: var(--text); background: var(--panel2); text-decoration: none; }
+.nav-link.active { color: var(--text); background: var(--panel2);
+                   border: 1px solid var(--border); font-weight: 600; }
+h1.page-title { font-size: 22px; letter-spacing: -0.02em; margin: 0 0 18px;
+                display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+h1.page-title .tag { color: var(--muted); font-size: 12.5px; font-weight: 400; }
 .badge { display: inline-block; padding: 2px 9px; border-radius: 999px;
          font-size: 11.5px; font-weight: 600; letter-spacing: 0.03em;
          border: 1px solid var(--border); text-transform: uppercase; }
@@ -157,10 +168,7 @@ pre { background: var(--panel2); border: 1px solid var(--border);
 /* ---------------------------------------------------------------- polish */
 header.top { position: sticky; top: 0; z-index: 10; background: rgba(13,17,23,.92);
              backdrop-filter: blur(8px); border: 1px solid var(--border);
-             border-radius: 12px; padding: 12px 16px; }
-header.top h1 { background: linear-gradient(90deg, var(--blue), var(--purple));
-                -webkit-background-clip: text; background-clip: text;
-                color: transparent; font-size: 21px; }
+             border-radius: 12px; padding: 10px 16px; }
 .card, .panel, .hero { transition: border-color .15s ease, transform .15s ease; }
 .card:hover, .panel:hover { border-color: rgba(88,166,255,.4); }
 button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible,
@@ -189,6 +197,10 @@ tr.cfg td { background: rgba(126,224,163,.06); }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 6px;
         font-size: 11px; background: var(--panel2); border: 1px solid var(--border);
         color: var(--muted); }
+.actions { display: flex; gap: 8px; margin: -8px 0 16px; flex-wrap: wrap; }
+.actions .btn { padding: 5px 12px; font-size: 12px; }
+#live-status.pulse { color: var(--green); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
 footer { margin-top: 30px; color: var(--muted); font-size: 12px;
          border-top: 1px solid var(--border); padding-top: 14px; }
 """
@@ -264,13 +276,60 @@ def _fmt_tokens(value: Any) -> str:
 
 
 def _fmt_time(iso: str | None) -> str:
+    """Relative human time ('2m ago') with the full timestamp as a tooltip."""
     if not iso:
         return "—"
-    t = iso[:19].replace("T", " ")
-    return t
+    full = iso[:19].replace("T", " ")
+    try:
+        from datetime import UTC, datetime
+
+        t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=UTC)
+        delta = datetime.now(UTC) - t
+        secs = int(delta.total_seconds())
+        if secs < 60:
+            label = "just now"
+        elif secs < 3600:
+            label = f"{secs // 60}m ago"
+        elif secs < 86400:
+            label = f"{secs // 3600}h ago"
+        else:
+            label = f"{secs // 86400}d ago"
+    except (ValueError, TypeError):
+        label = full
+    return f'<span title="{_esc(full)}">{_esc(label)}</span>'
 
 
-def _page(title: str, body: str, *, extra_js: str = "") -> str:
+#: Shared top navigation — every page renders the same nav so a human
+#: always knows where they are and what exists.
+_NAV_ITEMS = [
+    ("/", "overview"),
+    ("/tasks/new", "new task"),
+    ("/schedules-page", "schedules"),
+    ("/usage", "usage"),
+    ("/models-page", "models"),
+    ("/memory-page", "memory"),
+    ("/skills-page", "skills"),
+    ("/system", "system"),
+]
+
+
+def _nav(active: str) -> str:
+    links = "".join(
+        f'<a class="nav-link{" active" if label == active else ""}" '
+        f'href="{href}">{label}</a>'
+        for href, label in _NAV_ITEMS
+    )
+    return (
+        '<header class="top">'
+        '<a class="brand" href="/">🛡️ bucker-agent</a>'
+        f'<nav class="links">{links}</nav>'
+        "</header>"
+    )
+
+
+def _page(title: str, body: str, *, active: str = "", extra_js: str = "") -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -282,6 +341,7 @@ def _page(title: str, body: str, *, extra_js: str = "") -> str:
 </head>
 <body>
 <div class="wrap">
+{_nav(active)}
 {body}
 <footer>bucker-agent — every task is an append-only event stream; state is a replay of history. · <a href="/docs">api docs</a></footer>
 </div>
@@ -344,15 +404,7 @@ def render_index(stats: dict, tasks: list[dict]) -> str:
         empty_cta = ""
 
     body = f"""
-<header class="top">
-  <h1>bucker-agent</h1>
-  <span class="tag">nothing is trusted until it's verified</span>
-  <span class="spacer"></span>
-  <a class="btn" href="/usage">usage</a>
-  <a class="btn" href="/system">system</a>
-  <a class="btn" href="/tasks/new">+ new task</a>
-  <a class="btn" href="/docs">api</a>
-</header>
+<h1 class="page-title">bucker-agent <span class="tag">nothing is trusted until it's verified</span></h1>
 
 <div class="hero">
   <h2>plan → work → verify</h2>
@@ -391,7 +443,7 @@ def render_index(stats: dict, tasks: list[dict]) -> str:
   </table>
 </div>
 """
-    return _page("Overview", body)
+    return _page("Overview", body, active="overview")
 
 
 # ------------------------------------------------------------- system page --
@@ -450,19 +502,7 @@ def render_system_page(status: dict) -> str:
     tasks = platform.get("tasks")
 
     body = f"""
-<header class="top">
-  <h1>system</h1>
-  <span class="tag">control center</span>
-  <span class="spacer"></span>
-  <a class="btn" href="/">overview</a>
-  <a class="btn" href="/usage">usage</a>
-  <a class="btn" href="/models-page">models</a>
-  <a class="btn" href="/memory-page">memory</a>
-  <a class="btn" href="/skills-page">skills</a>
-  <a class="btn" href="/schedules-page">schedules</a>
-  <a class="btn" href="/system">system</a>
-  <a class="btn" href="/tasks/new">+ new task</a>
-</header>
+<h1 class="page-title">system <span class="tag">control center</span></h1>
 
 {degraded_html}
 
@@ -491,7 +531,7 @@ def render_system_page(status: dict) -> str:
   </dl></div>
 </div>
 """
-    return _page("System", body)
+    return _page("System", body, active="system")
 
 
 # --------------------------------------------------------- schedules page --
@@ -536,13 +576,7 @@ def render_schedules_page(
         template_opts = '<option value="">(no templates registered)</option>'
 
     body = """
-<header class="top">
-  <h1>schedules</h1>
-  <span class="tag">recurring verified tasks</span>
-  <span class="spacer"></span>
-  <a class="btn" href="/">overview</a>
-  <a class="btn" href="/tasks/new">+ new task</a>
-</header>
+<h1 class="page-title">schedules <span class="tag">recurring verified tasks</span></h1>
 
 %(rows)s
 
@@ -598,7 +632,7 @@ async function delSchedule(id) {
 }
 </script>
 """ % {"rows": rows, "template_opts": template_opts}
-    return _page("Schedules", body)
+    return _page("Schedules", body, active="schedules")
 
 
 # -------------------------------------------------------------- models page --
@@ -660,14 +694,7 @@ def render_models_page(
     )
 
     body = f"""
-<header class="top">
-  <h1>models</h1>
-  <span class="tag">free · paid · local</span>
-  <span class="spacer"></span>
-  <a class="btn" href="/">overview</a>
-  <a class="btn" href="/usage">usage</a>
-  <a class="btn" href="/schedules-page">schedules</a>
-</header>
+<h1 class="page-title">models <span class="tag">free · paid · local</span></h1>
 
 <div class="grid2">
   <div class="panel"><h2>Configured chain</h2>{chain_html}</div>
@@ -685,7 +712,7 @@ def render_models_page(
   </table>
 </div>
 """
-    return _page("Models", body)
+    return _page("Models", body, active="models")
 
 
 # -------------------------------------------------------------- skills page --
@@ -709,13 +736,7 @@ def render_skills_page(skills: list) -> str:
                 "or with <code>bucker skills new</code>.</div>")
 
     body = """
-<header class="top">
-  <h1>skills</h1>
-  <span class="tag">procedural memory</span>
-  <span class="spacer"></span>
-  <a class="btn" href="/">overview</a>
-  <a class="btn" href="/memory-page">memory</a>
-</header>
+<h1 class="page-title">skills <span class="tag">procedural memory</span></h1>
 
 <div class="panel"><h2>Skills</h2>%(rows)s</div>
 
@@ -753,7 +774,7 @@ async function createSkill(ev) {
 }
 </script>
 """ % {"rows": rows}
-    return _page("Skills", body)
+    return _page("Skills", body, active="skills")
 
 
 # -------------------------------------------------------------- memory page --
@@ -778,13 +799,7 @@ def render_memory_page(facts: list) -> str:
                 "or the form below.</div>")
 
     body = """
-<header class="top">
-  <h1>memory</h1>
-  <span class="tag">semantic memory</span>
-  <span class="spacer"></span>
-  <a class="btn" href="/">overview</a>
-  <a class="btn" href="/skills-page">skills</a>
-</header>
+<h1 class="page-title">memory <span class="tag">semantic memory</span></h1>
 
 <div class="panel"><h2>Facts</h2>%(rows)s</div>
 
@@ -818,7 +833,7 @@ async function createFact(ev) {
 }
 </script>
 """ % {"rows": rows}
-    return _page("Memory", body)
+    return _page("Memory", body, active="memory")
 
 
 # ------------------------------------------------------------- usage page --
@@ -889,14 +904,7 @@ def render_usage_page(usage: dict) -> str:
     ) or '<div class="muted">no usage in the last 7 days</div>'
 
     body = f"""
-<header class="top">
-  <h1>usage</h1>
-  <span class="tag">which model, how many tokens, what it cost</span>
-  <span class="spacer"></span>
-  <a class="btn" href="/">overview</a>
-  <a class="btn" href="/system">system</a>
-  <a class="btn" href="/api/usage">json</a>
-</header>
+<h1 class="page-title">usage <span class="tag">which model, how many tokens, what it cost</span></h1>
 
 <div class="cards">
   <div class="card"><div class="k">Total tokens</div><div class="v small">{_fmt_tokens(total_tokens)}</div></div>
@@ -922,7 +930,7 @@ def render_usage_page(usage: dict) -> str:
   <div class="panel"><h2>Tokens per day <span class="hint">last 7 days</span></h2>{day_html}</div>
 </div>
 """
-    return _page("Usage", body)
+    return _page("Usage", body, active="usage")
 
 
 # ------------------------------------------------------------- task page --
@@ -971,11 +979,13 @@ def _event_row(e: dict) -> str:
     detail = f'<div class="detail">{" · ".join(detail_parts)}</div>' if detail_parts else ""
     ref = ""
     if e.get("tool_output_ref"):
-        ref = (f'<div class="ref muted">blob {_esc(e["tool_output_ref"])[:48]}</div>')
+        # Dev artifact: keep it available (tooltip) but out of the human's face.
+        ref = (f'<div class="ref muted" title="blob {_esc(e["tool_output_ref"])}">'
+               f'🔗 {_esc(e["tool_output_ref"][:14])}…</div>')
 
     return (
         f'<li><span class="dot" style="background:{color}"></span>'
-        f'<span class="when">{_fmt_time(e.get("created_at", ""))} · #{e.get("id", "?")}</span>'
+        f'<span class="when">{_fmt_time(e.get("created_at", ""))}</span>'
         f'<div class="what">{_esc(label)}</div>{detail}{ref}</li>'
     )
 
@@ -1107,10 +1117,34 @@ def render_task_dashboard(
     status = state.get("status", "unknown")
     refresh = ""
     if status in ("pending", "in_progress"):
+        # In-place refresh: swap the timeline + status in the DOM instead of
+        # a full page reload (no flicker, keeps scroll position).
         refresh = """
 <script>
-setTimeout(function () { location.reload(); }, 4000);
-</script>"""
+async function pollTask() {
+  try {
+    const r = await fetch('/tasks/__TASK_ID__/events');
+    if (!r.ok) return;
+    const evs = await r.json();
+    const dot = document.getElementById('live-status');
+    if (dot && evs.length) {
+      const last = evs[evs.length - 1];
+      dot.textContent = 'live · ' + (last.event_type || 'working');
+      dot.classList.add('pulse');
+    }
+    const statusR = await fetch('/tasks/__TASK_ID__');
+    if (statusR.ok) {
+      const st = await statusR.json();
+      if (st.status && !['pending','in_progress'].includes(st.status)) {
+        location.reload();  // terminal state — do one clean full render
+        return;
+      }
+    }
+  } catch (e) { /* network blip — keep polling */ }
+  setTimeout(pollTask, 3000);
+}
+setTimeout(pollTask, 3000);
+</script>""".replace("__TASK_ID__", _esc(task_id))
 
     plan = state.get("plan")
     plan_html = ""
@@ -1191,17 +1225,16 @@ setTimeout(function () { location.reload(); }, 4000);
         )
 
     body = f"""
-<header class="top">
-  <h1 class="mono" style="font-size:16px">task {_esc(task_id)}</h1>
+<h1 class="page-title">task <span class="mono">{_esc(task_id[:16])}…</span>
   <span class="tag">{_badge(status)}</span>
-  <span class="spacer"></span>
-  <a class="btn" href="/">overview</a>
-  <a class="btn" href="/usage">usage</a>
-  <a class="btn" href="/system">system</a>
+  <span id="live-status" class="tag"></span>
+</h1>
+
+<div class="actions">
   <a class="btn" href="/tasks/{_esc(task_id)}/events">events json</a>
   <a class="btn" href="/tasks/{_esc(task_id)}/trajectory?format=md">trajectory</a>
   <a class="btn" href="/tasks/{_esc(task_id)}/replay">replay</a>
-</header>
+</div>
 
 {_verdict_banner(status)}
 
@@ -1245,11 +1278,9 @@ def render_replay_page(task_id: str) -> str:
     fetch so no form reload is involved.
     """
     body = f"""
-<header class="top">
-  <h1 class="mono" style="font-size:16px">replay · {_esc(task_id[:16])}…</h1>
-  <span class="spacer"></span>
-  <a class="btn" href="/tasks/{_esc(task_id)}/dashboard">back to task</a>
-</header>
+<h1 class="page-title">replay <span class="mono">{_esc(task_id[:16])}…</span>
+  <span class="tag"><a href="/tasks/{_esc(task_id)}/dashboard">back to task</a></span>
+</h1>
 
 <div class="panel">
   <h2>Deterministic replay</h2>
@@ -1322,12 +1353,7 @@ def render_new_task_page(templates: list | None = None) -> str:
 
     tpl_json = __import__("json").dumps(templates)
     body = """
-<header class="top">
-  <h1>new task</h1>
-  <span class="spacer"></span>
-  <a class="btn" href="/">overview</a>
-  <a class="btn" href="/schedules-page">schedules</a>
-</header>
+<h1 class="page-title">new task <span class="tag">run the real pipeline</span></h1>
 
 <div class="panel">
   <h2>Create a task</h2>
@@ -1407,4 +1433,4 @@ async function submitTask(ev) {
 }
 </script>
 """ % {"card_html": card_html, "tpl_json": tpl_json}
-    return _page("New task", body)
+    return _page("New task", body, active="new task")

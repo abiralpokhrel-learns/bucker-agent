@@ -13,6 +13,11 @@ backups/
 blobstore/
 workspace/
 evaluation_results/
+# Lite-mode sqlite database (created by `bucker lite` / start.bat at repo root)
+bucker_lite.db
+bucker_lite.db-wal
+bucker_lite.db-shm
+*.lite.db
 # Local memory + skills (user-owned data at repo root, git-ignored by design)
 # NOTE: root-anchored — bucker/memory/ is source code and must be tracked.
 /memory/

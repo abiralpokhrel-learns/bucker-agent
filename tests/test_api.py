@@ -85,6 +85,39 @@ class FakeSnapshots:
         return {"status": "pending"}
 
 
+class FakeTemporalHandle:
+    """Stand-in for a Temporal workflow handle."""
+
+    def __init__(self, workflow_id: str = "workflow-fake-id") -> None:
+        self.id = workflow_id
+
+    async def terminate(self, **kwargs) -> None:
+        return None
+
+
+class FakeTemporalClient:
+    """Stand-in for temporalio's Client.
+
+    The API tests mock the DB store but ``create_task`` /
+    ``start_task_workflow`` import ``Client`` directly and previously
+    connected to REAL Temporal on localhost:7233 — every suite run leaked
+    real workflows into the live namespace, which a running worker then
+    failed with ``ForeignKeyViolationError`` (the task rows existed only
+    in the fake pool). This fake makes the API tests hermetic: scheduling
+    "succeeds" against nothing.
+    """
+
+    def __init__(self) -> None:
+        self.started: list[str] = []
+
+    async def start_workflow(self, *args, **kwargs) -> FakeTemporalHandle:
+        self.started.append(kwargs.get("id", "task-?"))
+        return FakeTemporalHandle()
+
+    def get_workflow_handle(self, workflow_id: str) -> FakeTemporalHandle:
+        return FakeTemporalHandle(workflow_id)
+
+
 # ------------------------------------------------------------ helpers -------
 
 
@@ -115,8 +148,24 @@ def _clear_fakes():
 
 
 @pytest.fixture
-def client():
-    """TestClient with mocked store."""
+def client(monkeypatch):
+    """TestClient with mocked store AND mocked Temporal client.
+
+    The store fakes make the API hermetic for DB; the Temporal patch makes
+    it hermetic for scheduling too. Without it, ``create_task`` →
+    ``start_task_workflow`` connected to REAL Temporal on localhost:7233
+    and every suite run leaked real workflows into the live namespace
+    (whose task rows existed only in the fake pool — a live worker then
+    failed them with ForeignKeyViolationError). Tests that want Temporal
+    to be DOWN override ``Client.connect`` themselves via monkeypatch.
+    """
+    from temporalio.client import Client
+
+    async def _fake_connect(*args, **kwargs) -> FakeTemporalClient:
+        return FakeTemporalClient()
+
+    monkeypatch.setattr(Client, "connect", _fake_connect)
+
     _inject_fakes()
 
     import sys

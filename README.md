@@ -65,6 +65,32 @@ evidence-based improvement is what the system actually *is*.
 
 ## Quickstart (1 minute)
 
+### Zero-infrastructure path (recommended for first try)
+
+**You need:** Python 3.11+ installed. Nothing else — no Docker, no
+Postgres, no Temporal, no uv. `start.sh`/`start.bat` installs the Python
+package with plain pip; `bucker lite` uses a SQLite database and runs
+tasks in-process, so the whole platform comes up on a bare laptop.
+
+```bash
+git clone https://github.com/abiralpokhrel-learns/bucker-agent && cd bucker-agent
+./start.sh          # Windows: start.bat  (double-click works)
+#  1. finds/installs Python if missing
+#  2. creates .venv + pip install -e .
+#  3. starts bucker lite -> dashboard opens at http://localhost:8123
+```
+
+Demo tasks (task_type=demo) work with zero API keys and no model
+configuration. `code_change` tasks need a model key in `.env`
+(`DEEPSEEK_API_KEY`, or `OPENROUTER_API_KEY`) — set them and restart, or
+see the full setup below.
+
+Lite mode runs the worker's code directly on the host in a scratch
+folder (no container isolation) — use it for code you trust. The full
+Docker stack below is the isolated, production path.
+
+### Full stack (Docker + Temporal — durable, isolated)
+
 **You need:** Docker Desktop, running. That's it — `start.sh` installs
 `uv` if it's missing, and `bucker dev` bootstraps everything else on
 first run (`.env` + token, Postgres, migrations), then starts the stack.
@@ -91,6 +117,35 @@ uv run python -m bucker.cli start --objective "my first durable task" --wait
 uv run python -m bucker.cli events <task_id>   # the full audit trail
 uv run python -m bucker.cli show    <task_id>   # state, rebuilt from events
 ```
+
+### Lite mode vs the full stack
+
+`bucker lite` (what `start.sh`/`start.bat` run) replaces the three
+external services with in-process equivalents so the platform runs on a
+bare laptop:
+
+| Piece | Full stack (`bucker dev`) | Lite mode (`bucker lite`) |
+|---|---|---|
+| Database | PostgreSQL (Docker) | SQLite file (`bucker_lite.db`) |
+| Workflow engine | Temporal server | in-process asyncio runner |
+| Sandbox | network-isolated Docker container | host subprocesses in a scratch dir |
+| Install | `uv` + Docker | plain `pip install -e .` |
+| Schedules | Temporal scheduler | not available (501 with explanation) |
+
+Lite mode uses the **same** planner, worker, verifier, event store,
+budget guard, retry policy, memory, dashboard, and API — only the
+transport/storage layers are swapped. Tasks, graphs, and replay behave
+identically; the API reports `storage: sqlite` / `temporal:
+in-process` on the system page.
+
+**The sandbox caveat:** lite mode runs worker-produced code directly on
+the host in a workspace folder — no container isolation. Use it for
+code you trust (demos, your own tasks, local experiments). Anything
+untrusted belongs on the full stack, whose Docker sandbox is the
+security boundary. `recorded` model mode is the default, so demo tasks
+and replay work with **zero API keys**; add `DEEPSEEK_API_KEY` /
+`OPENROUTER_API_KEY` and set `BUCKER_MODEL_MODE=live` for real model
+calls, exactly like the full stack.
 
 ### Advanced (manual) setup
 
@@ -140,6 +195,11 @@ Every stage writes an event (who, what, cost, when). The dashboard streams
 them live. Full pipeline details in
 [Run the pipeline end to end](#run-the-pipeline-end-to-end).
 
+The same pipeline runs in two execution modes: the full stack (Temporal +
+Postgres + Docker sandbox) or [lite mode](#lite-mode-vs-the-full-stack)
+(SQLite + in-process runner + local sandbox) — the planner, worker,
+verifier, and event store are identical; only the transport layers change.
+
 ## Features
 
 - 🧠 **Planner** — turns a fuzzy goal into a strict typed contract
@@ -156,6 +216,8 @@ them live. Full pipeline details in
 - 🎛️ **Dashboard** — live event stream, replay, usage panel, system health
 - 🩺 **Self-healing** — `bucker reconcile` re-schedules tasks that never started
 - 🗄️ **Backups** — one-command Postgres + blobstore dump with a restore drill
+- ⚡ **Lite mode** — `bucker lite`: SQLite + in-process runner + local sandbox;
+  the whole platform on a machine with only Python (no Docker/Postgres/Temporal)
 
 
 
@@ -327,28 +389,61 @@ a gate passes, the README's claims stay at "prototype", not "v1.0".
 
 ## Choose a model
 
-The smoke run needs a model. Two free options:
+bucker-agent is designed to be **model-agnostic**. The planner, worker,
+critic, and verifier all talk to a provider-neutral inference layer
+(`bucker/gateway`), so any model that speaks the OpenAI-compatible
+chat-completions protocol plugs in with a single configuration change.
+Development and testing used **Ollama for fully local inference** and
+the **DeepSeek V4 API** as the primary remote provider. The providers
+below marked *optional* are officially supported — the integration is
+already in the codebase — but were not part of our testing, so we make
+no claims about their relative performance.
 
-### Option A — Ollama (local, recommended to start)
+### Supported model providers
 
-The model runs on your machine. No account, no key, no cost.
+| Provider | Type | Key/env | Notes |
+|---|---|---|---|
+| **Ollama** | Local | — (no key) | Fully local inference; used in development. No account, no cost. |
+| **DeepSeek V4** | Remote (OpenAI-compatible) | `DEEPSEEK_API_KEY` | Primary remote provider during development and testing. |
+| **Claude (e.g. Opus)** | Remote | `ANTHROPIC_API_KEY` | Officially supported optional provider. Plug in the key, select the model — no code changes. |
+| **OpenAI (e.g. GPT-5.6 or similar)** | Remote | `OPENAI_API_KEY` | Officially supported optional provider. Plug in the key, select the model — no code changes. |
+| **OpenRouter** | Remote (aggregator) | `OPENROUTER_API_KEY` | Free-tier and paid models behind one key; useful for fallback chains. |
+| **Any OpenAI-compatible endpoint** | Remote/local | custom base URL | vLLM, LM Studio, Together, or your own server — same protocol, same config shape. |
+
+### Quick configuration
+
+Switching providers is a **one-line change** in `.env` — add the key and
+select the model. No code changes required.
 
 ```bash
-ollama pull qwen2.5-coder:7b
-```
-
-Then in `.env`:
-
-```
+# ---- Local inference (recommended to start; no account, no cost) ----
+ollama pull qwen2.5-coder:7b          # ~8 GB RAM; qwen2.5-coder:3b for small machines
 BUCKER_MODEL=ollama/qwen2.5-coder:7b
+
+# ---- DeepSeek V4 (primary remote provider used in development) ----
+DEEPSEEK_API_KEY=sk-...
+BUCKER_MODEL=deepseek/deepseek-v4-flash
+
+# ---- Claude (optional; officially supported, not part of our testing) ----
+ANTHROPIC_API_KEY=sk-ant-...
+BUCKER_MODEL=anthropic/claude-opus-4-20250514   # or claude-sonnet-4-...
+
+# ---- OpenAI (optional; officially supported, not part of our testing) ----
+OPENAI_API_KEY=sk-...
+BUCKER_MODEL=openai/gpt-5.6
+
+# ---- OpenRouter (free tier or paid) ----
+OPENROUTER_API_KEY=sk-or-v1-...
+BUCKER_MODEL=openrouter/nvidia/nemotron-3-super-120b-a12b:free
+```
+
+Token ceilings are hard stops — an unbounded generation is an unbounded
+bill. Set them once and they apply to every provider:
+
+```bash
 BUCKER_MAX_TOKENS_PLANNER=1000
 BUCKER_MAX_TOKENS_WORKER=3000
 ```
-
-The 7B model needs roughly 8 GB of free memory. On a smaller machine, pull
-a smaller coding model (`qwen2.5-coder:3b`) and point `BUCKER_MODEL` at it.
-The smoke-run preflight checks that Ollama and the model are ready before it
-creates a task.
 
 ### Model fallbacks
 
@@ -365,22 +460,11 @@ Recorded-mode replay stays keyed to the primary model, so the chain never
 affects determinism. The system page shows the chain and which providers are
 reachable.
 
-### Option B — OpenRouter (free tier or paid)
-
-OpenRouter's free tier works for a first run. Create a key at
-openrouter.ai, then in `.env`:
-
-```
-OPENROUTER_API_KEY=sk-or-v1-...
-BUCKER_MODEL=openrouter/nvidia/nemotron-3-super-120b-a12b:free
-BUCKER_MAX_TOKENS_PLANNER=1000
-BUCKER_MAX_TOKENS_WORKER=3000
-```
-
-Free-model availability and rate limits change; pick a current `:free`
-model from [OpenRouter's list](https://openrouter.ai/models) if needed.
-The token ceilings are hard stops — an unbounded generation is an unbounded
-bill.
+> **The swap-in promise:** because the model layer is provider-neutral, a
+> user who has API keys for Claude (e.g., Opus) or OpenAI (e.g., GPT-5.6 or
+> similar) can plug them in simply by adding their API key and selecting the
+> model — no code changes required. The same planner, worker, verifier, and
+> event store run against whichever provider you choose.
 
 ## Prove the durability claim yourself
 

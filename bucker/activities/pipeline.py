@@ -36,6 +36,15 @@ def workspace_for(task_id: str) -> Path:
     return Path(settings.blob_root).parent / "workspace" / task_id
 
 
+def _sandbox_for(task_id: str):
+    """DockerSandbox by default; LocalSandbox in lite mode (no Docker)."""
+    if settings.sandbox_mode == "local":
+        from bucker.sandbox.local import LocalSandbox
+
+        return LocalSandbox(workspace_for(task_id))
+    return DockerSandbox(workspace_for(task_id))
+
+
 # ----------------------------------------------------------------- worker ---
 @activity.defn
 async def run_worker(task_id: str, task_dict: dict, attempt: int,
@@ -53,7 +62,7 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int,
     task = Task(**task_dict)
     router = ModelRouter(get_blobs(), model=model)
 
-    sandbox = DockerSandbox(workspace_for(task_id))
+    sandbox = _sandbox_for(task_id)
     await sandbox.start()
     try:
         try:
@@ -209,7 +218,7 @@ async def run_verifier(task_id: str, task_dict: dict, result_dict: dict,
 
     verifier = get_verifier(task.verifier)
 
-    sandbox = DockerSandbox(workspace_for(task_id))
+    sandbox = _sandbox_for(task_id)
     await sandbox.start()
     try:
         verdict = await verifier.verify(task, result, sandbox)
@@ -307,6 +316,31 @@ async def record_decision(task_id: str, decision: dict, attempt: int) -> None:
                 "UPDATE tasks SET status = $1 WHERE id = $2",
                 terminal_status, tid,
             )
+
+
+@activity.defn
+async def record_failure(task_id: str, reason: str, attempt: int) -> None:
+    """Record a TERMINAL infrastructure failure (not a policy decision).
+
+    The retry policy can only make decisions about verification results;
+    when an activity itself fails permanently (all model providers down,
+    sandbox unreachable, worker crash), the workflow must still leave a
+    terminal trace. The event is the source of truth; tasks.status is the
+    denormalized cache — keep both honest so the API never shows a
+    dead task as in_progress forever.
+    """
+    store = await get_store()
+    tid = UUID(task_id)
+    await store.append(
+        tid,
+        EventType.TASK_FAILED,
+        {"attempt": attempt, "reason": str(reason)[:500]},
+        idempotency_key=f"{task_id}:failed-{attempt}",
+    )
+    async with store._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE tasks SET status = 'failed' WHERE id = $1", tid,
+        )
 
 
 @activity.defn

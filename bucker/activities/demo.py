@@ -167,4 +167,16 @@ async def record_task_completed(task_id: str) -> int:
         {},
         idempotency_key=f"{task_id}:completed",
     )
+    # The event is the source of truth; tasks.status is a denormalized
+    # cache for listing/queries. Keep the cache honest at terminal
+    # events (same pattern as record_decision in pipeline.py) — without
+    # this a completed demo task shows "pending" in /tasks forever.
+    try:
+        async with store._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE tasks SET status = 'completed' WHERE id = $1",
+                UUID(task_id),
+            )
+    except Exception:  # noqa: BLE001 — the event already recorded; cache is best-effort
+        pass
     return event.id
