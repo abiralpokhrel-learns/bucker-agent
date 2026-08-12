@@ -110,14 +110,32 @@ def terminate(proc: subprocess.Popen) -> None:
 def main() -> int:
     print(f"[smoke] repo     : {REPO}")
     print(f"[smoke] lite cmd : {LITE_CMD}")
+    # Fail fast if something is already on 8123 — a leftover server with a
+    # stale DB handle answers the health probe but 500s every request
+    # (seen locally; would otherwise cost a whole wait cycle).
+    status, _ = _http("GET", "/", timeout=5)
+    if status >= 100:
+        raise SystemExit(
+            f"FATAL: something is already answering on {BASE} "
+            "(status {status}) — kill it first, or the smoke run will "
+            "exercise the wrong server."
+        )
     # Own process group so terminate() can take the uvicorn child down too.
-    kwargs = {}
-    if os.name != "nt":
-        kwargs["start_new_session"] = True
     log = open(REPO / "lite-smoke.log", "w", encoding="utf-8")  # noqa: SIM115 — the handle must outlive the Popen for its whole lifetime
-    proc = subprocess.Popen(
-        LITE_CMD, cwd=REPO, shell=True, stdout=log, stderr=subprocess.STDOUT, **kwargs
-    )
+    if os.name == "nt":
+        # Windows: NO shell=True. With it, Python wraps the command as
+        # `cmd /c "cmd /c start.bat"` — the double nesting hangs the batch
+        # and swallows all output (verified empirically: zero bytes written,
+        # process alive forever). shell=False passes the command line raw to
+        # CreateProcess, which runs the batch normally.
+        proc = subprocess.Popen(
+            LITE_CMD, cwd=REPO, stdout=log, stderr=subprocess.STDOUT,
+        )
+    else:
+        proc = subprocess.Popen(
+            LITE_CMD, cwd=REPO, shell=True, stdout=log,
+            stderr=subprocess.STDOUT, start_new_session=True,
+        )
     try:
         wait_for_dashboard(proc)
 
