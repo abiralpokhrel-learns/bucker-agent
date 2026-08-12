@@ -56,8 +56,11 @@ async def run_lite(*, open_browser: bool = True, port: int = API_PORT) -> int:
     print("  [lite] storage  : sqlite ->", PROJECT_ROOT / LITE_DB)
     print("  [lite] sandbox  : local host subprocesses (no Docker)")
     print("  [lite] runner   : in-process (no Temporal)")
-    print("  ⚠️  LITE MODE — generated code runs directly on this computer")
-    print("     (no container isolation). Use only with trusted tasks.")
+    # ASCII only on purpose: console codepages differ (the runner's cp1252
+    # crashed on the ⚠ emoji with UnicodeEncodeError — lite must boot
+    # anywhere).
+    print("  !!  LITE MODE -- generated code runs directly on this computer")
+    print("      (no container isolation). Use only with trusted tasks.")
     await ensure_db()
     print("  [lite] schema   : ready")
 

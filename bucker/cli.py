@@ -930,6 +930,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    # Console codepages differ wildly (CI runners: cp1252; legacy cmd:
+    # cp437). Printing a non-encodable character (e.g. the ⚠ emoji —
+    # crashed `bucker lite` on the launcher-windows CI job) raises
+    # UnicodeEncodeError and kills the command. Force UTF-8 with
+    # replacement so every console print works on any codepage.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
     args = build_parser().parse_args()
     raise SystemExit(asyncio.run(args.func(args)))
 
