@@ -19,6 +19,7 @@ from bucker.core.snapshots import SnapshotStore
 from bucker.core.state import rebuild_state
 from bucker.lite.pool import LitePool, reorder_params, translate_sql
 from bucker.sandbox.local import LocalSandbox
+from bucker.sandbox.runtime import _remove_stray_prefix_dirs
 
 
 @pytest.fixture
@@ -217,6 +218,44 @@ async def test_local_sandbox_apply_diff(tmp_path):
         assert "def mul" in content
     finally:
         await sandbox.stop()
+
+
+@pytest.mark.asyncio
+async def test_apply_diff_fallback_does_not_leave_prefix_dirs(tmp_path):
+    """The patch -p0 fallback keeps a/ b/ prefixes and can half-apply into
+    literal b/ subdirs; pytest then recurses into b/ and collection crashes
+    (exit 2) even when the real files are correct. apply_diff must clean
+    those up so the verifier only sees the real workspace."""
+    sandbox = LocalSandbox(tmp_path)
+    await sandbox.start()
+    try:
+        sandbox.write_file("calc.py", "def add(a, b):\n    return a + b\n")
+        # First hunk has context that does NOT match the file (forces git
+        # apply + patch -p1 to fail); the new-file section then lands via
+        # patch -p0 with the b/ prefix intact.
+        diff = (
+            "--- a/calc.py\n+++ b/calc.py\n@@ -1,5 +1,6 @@\n"
+            "def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n"
+            "--- /dev/null\n+++ b/test_calc.py\n@@ -0,0 +1,3 @@\n"
+            "+def test_thing():\n+    pass\n"
+        )
+        await sandbox.apply_diff(diff, files=["calc.py", "test_calc.py"])
+        assert not (tmp_path / "b").exists(), "stray b/ dir must be cleaned"
+        assert not (tmp_path / "a").exists(), "stray a/ dir must be cleaned"
+        assert (tmp_path / "calc.py").exists(), "real workspace files untouched"
+    finally:
+        await sandbox.stop()
+
+
+def test_remove_stray_prefix_dirs_keeps_real_files(tmp_path):
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "junk.py").write_text("broken", encoding="utf-8")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "real.py").write_text("ok", encoding="utf-8")
+    _remove_stray_prefix_dirs(tmp_path)
+    assert not (tmp_path / "b").exists()
+    assert not (tmp_path / "a").exists()
+    assert (tmp_path / "real.py").read_text(encoding="utf-8") == "ok"
 
 
 # --------------------------------------------------------------- runner -----

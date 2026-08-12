@@ -58,6 +58,20 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **DeepSeek live runs silently fell back to the fallback chain** — the
+  catalog id `deepseek-v4-flash` was sent verbatim to api.deepseek.com,
+  which returns empty content / drops the connection on real (large)
+  worker prompts. New `_UPSTREAM_ALIASES` maps it to the real wire id
+  `deepseek-chat` (and `deepseek-v3`), keeping the append-only catalog id
+  stable in .env chains and replay digests (`bucker/gateway/registry.py`).
+- **`patch -p0` fallback polluted the workspace with `a/`/`b/` dirs** —
+  when git apply and patch -p1 both fail, patch -p0 keeps the diff's
+  `a/`/`b/` prefixes and half-applies broken duplicates into literal
+  `b/` dirs; the verifier's pytest then recursed into them and crashed
+  collection (exit 2) even when the real files were correct, escalating
+  good builds to needs_human_review. Both sandbox `apply_diff`
+  implementations now best-effort-remove stray prefix dirs
+  (`bucker/sandbox/runtime.py`, `bucker/sandbox/local.py`).
 - **Graph tasks never left `pending`** (the headline reviewer bug) — the
   state fold's `_graph_step_completed` was purely informational, and the
   graph runner never emitted a terminal event, so a graph task folded to

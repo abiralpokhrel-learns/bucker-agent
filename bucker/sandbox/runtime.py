@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import shlex
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -171,6 +172,25 @@ def repair_diff_prefixes(diff: str) -> str:
             continue
         out.append(line)
     return "\n".join(out)
+
+
+def _remove_stray_prefix_dirs(workspace: Path) -> None:
+    """Best-effort cleanup after the apply tolerance chain.
+
+    When git apply AND patch -p1 both fail, the ``patch -p0`` fallback
+    keeps the diff's ``a/``/``b/`` prefixes and partially applies into
+    literal ``a/`` and ``b/`` subdirectories (GNU patch applies each file
+    section independently, so a broken later section can still land).
+    Those duplicates are half-applied garbage, and the verifier's pytest
+    recurses into them — a broken ``b/test_x.py`` crashed collection
+    (pytest exit 2) even when the real files at the workspace root were
+    correct, escalating a good build to needs_human_review. Remove any
+    such dirs so the verifier only ever sees the real workspace.
+    """
+    for name in ("a", "b"):
+        target = workspace / name
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
 
 
 class DockerSandbox:
@@ -334,11 +354,13 @@ class DockerSandbox:
         """
         diff = repair_diff_prefixes(ensure_diff_headers(diff, files))
         self.write_file(".bucker.patch", diff.replace("\r\n", "\n"))
-        return await self.exec(
+        result = await self.exec(
             "git apply --recount --verbose .bucker.patch 2>&1 || "
             "patch -p1 --forward < .bucker.patch || "
             "patch -p0 --forward < .bucker.patch"
         )
+        _remove_stray_prefix_dirs(self.workspace)
+        return result
 
 
 # ------------------------------------------------------------- subprocess ----

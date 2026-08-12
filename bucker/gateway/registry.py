@@ -68,6 +68,19 @@ _MAX_OUTPUT: dict[str, int] = {
     "openrouter/anthropic/claude-haiku-4.5": 64_000,
 }
 
+#: Upstream model aliases. The canonical id is the user-facing, append-only
+#: catalog name (it lives in .env chains and replay digests); the upstream
+#: provider may serve it under a DIFFERENT model id. deepseek-v4-flash is
+#: bucker's catalog name for the DeepSeek API's chat model — sending the
+#: catalog name to api.deepseek.com returns empty content / drops the
+#: connection on real work (the worker's big prompts), which silently
+#: forced every live run onto the fallback chain. Aliased here so the
+#: catalog id stays stable while the wire id is real.
+_UPSTREAM_ALIASES: dict[str, str] = {
+    "deepseek-v4-flash": "deepseek-chat",
+    "deepseek-v3": "deepseek-chat",
+}
+
 _DEFAULT_CAPABILITIES = frozenset({CAP_TOOLS, CAP_STREAMING, CAP_CODING})
 
 
@@ -282,7 +295,7 @@ def _build_model(
     return GatewayModel(
         canonical_id=canonical_id,
         provider=provider,
-        provider_model_id=rest,
+        provider_model_id=_UPSTREAM_ALIASES.get(rest, rest),
         family=rest.split("/")[0].split(":")[0],
         context=context,
         max_output=_MAX_OUTPUT.get(canonical_id, 8192),

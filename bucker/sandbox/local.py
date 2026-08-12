@@ -30,6 +30,7 @@ from bucker.sandbox.runtime import (
     DEFAULT_TIMEOUT_S,
     ExecResult,
     SandboxError,
+    _remove_stray_prefix_dirs,
     ensure_diff_headers,
     repair_diff_prefixes,
 )
@@ -153,11 +154,13 @@ class LocalSandbox:
         """Apply a unified diff in the scratch dir — same tolerance chain."""
         diff = repair_diff_prefixes(ensure_diff_headers(diff, files))
         self.write_file(".bucker.patch", diff.replace("\r\n", "\n"))
-        return await self.exec(
+        result = await self.exec(
             "git apply --recount --verbose .bucker.patch 2>&1 || "
             "patch -p1 --forward < .bucker.patch || "
             "patch -p0 --forward < .bucker.patch"
         )
+        _remove_stray_prefix_dirs(self.workspace)
+        return result
 
 
 # -------------------------------------------------------------- factory ----

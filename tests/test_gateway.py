@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from bucker.gateway.adapters import SimulatedProvider
 from bucker.gateway.quota import QuotaManager
-from bucker.gateway.registry import GatewayModel, ModelRegistry
+from bucker.gateway.registry import GatewayModel, ModelRegistry, _build_model
 from bucker.gateway.routing import RouterEngine
 from tests.conftest import requires_db
 
@@ -300,3 +300,18 @@ async def test_gateway_audit_chain_satisfies_both_fks(pool):
     # The event exists and telemetry really references it.
     events = await pool.fetchrow("SELECT id FROM events WHERE id = $1", event_id)
     assert events is not None
+
+
+def test_upstream_aliases_map_catalog_names_to_real_wire_ids():
+    """deepseek-v4-flash is a catalog name; api.deepseek.com serves it as
+    deepseek-chat. Sending the catalog name upstream made the DeepSeek
+    worker calls come back empty / drop the connection, silently forcing
+    every live run onto the fallback chain (the demo-blocking bug)."""
+    model = _build_model("deepseek/deepseek-v4-flash")
+    assert model.provider == "deepseek"
+    assert model.provider_model_id == "deepseek-chat"
+    assert model.canonical_id == "deepseek/deepseek-v4-flash"  # catalog id unchanged
+
+    # Aliasing must not touch other providers.
+    other = _build_model("openrouter/nvidia/nemotron-3-super-120b-a12b:free")
+    assert other.provider_model_id == "nvidia/nemotron-3-super-120b-a12b:free"
