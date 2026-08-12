@@ -34,62 +34,53 @@ And if it gets stuck, it asks **you** to decide.
   (___)
 ```
 
----
-
-## Step 1 - Install
-
-You need just TWO things:
-
-- **Docker Desktop** (running) - for the sandbox and the database
-- **uv** (Python package manager - install with `winget install astral-sh.uv`)
-
-Then, in the project folder:
-
-```bash
-uv sync
-```
-
-This installs everything. Done.
+> **⚠️ LITE MODE RUNS CODE ON YOUR MACHINE.** The quick start below runs
+> tasks directly on your computer (no container). Use it for tasks you
+> trust. For untrusted code, use the full Docker stack at the bottom of
+> this page.
 
 ---
 
-## Step 2 - One-command setup
+## Step 1 - Install (the easy way)
 
-The setup command checks your machine, creates your private config
-file (.env) with a generated security token, starts the database, and
-gets everything ready:
+You need **one thing**: Python 3.11, 3.12, or 3.13.
 
-```bash
-uv run python -m bucker.cli setup
-```
+- **Windows**: install Python from [python.org](https://www.python.org/downloads/)
+  (tick "Add python.exe to PATH"), or `winget install Python.Python.3.12`.
+- **macOS**: `brew install python@3.12` (or download from python.org).
+- **Linux**: `sudo apt install python3.12` (Debian/Ubuntu),
+  `sudo dnf install python3.12` (Fedora), or
+  `sudo pacman -S python` (Arch).
 
-That's it. If you have model API keys (DeepSeek / OpenRouter), open
-`.env` and paste them in. No keys? The robot still works with a free
-local model - install [Ollama](https://ollama.com) and run:
-
-```bash
-ollama pull qwen2.5-coder:7b
-```
+No Docker. No Postgres. No Temporal. No uv. No API keys to start.
 
 ---
 
-## Step 3 - Start the whole stack with ONE command
+## Step 2 - Start it
 
-No more three terminals. One command starts everything - the manager
-(Temporal), the robot (worker), and the dashboard (website):
+In the project folder:
 
-```bash
-uv run python -m bucker.cli dev
+**Windows** — double-click `start.bat` (or run it from a terminal):
+
+```powershell
+start.bat
 ```
 
-It detects what is already running and only starts what is missing.
-The first time, it may start Temporal for you automatically.
+**macOS / Linux**:
+
+```bash
+./start.sh
+```
+
+The launcher sets up everything (a private environment + dependencies,
+which takes a minute the first time), then starts bucker and opens the
+dashboard.
 
 ---
 
-## Step 4 - Give it your first task
+## Step 3 - Give it your first task
 
-Open your browser:
+Your browser opens:
 
 ```
 http://localhost:8123
@@ -101,14 +92,14 @@ Click **New task** and type something like:
 create a file called hello.py that prints "hello from the robot"
 ```
 
-Click create and watch it work.
+Click create and watch it work. Demo tasks work with **zero API keys**.
 
 You will see:
 
 1. **planning** - the robot decides what to do
 2. **working** - it writes the code
 3. **critique** - it double-checks its own diff
-4. **verifying** - it runs tests in the sandbox
+4. **verifying** - it runs tests
 5. **the verdict** - passed, failed, or "needs a human"
 
 ```
@@ -120,7 +111,7 @@ You will see:
 
 ---
 
-## Step 5 - What the statuses mean
+## Step 4 - What the statuses mean
 
 | Status             | Meaning                                   |
 |--------------------|-------------------------------------------|
@@ -135,7 +126,7 @@ You will see:
 
 ---
 
-## Step 6 - When the robot asks you
+## Step 5 - When the robot asks you
 
 If a task shows **needs_human_review**, open it and click:
 
@@ -144,6 +135,27 @@ If a task shows **needs_human_review**, open it and click:
 
 You can add a note explaining why. The robot never forgets - everything
 is written to an append-only log.
+
+---
+
+## Step 6 - Real model calls (optional)
+
+Zero-key demo tasks work out of the box. To let the robot actually
+write code with a real model, create a `.env` file in the project folder
+(see `.env.example`) and add a key:
+
+```
+DEEPSEEK_API_KEY=your-key-here
+```
+
+or, for free OpenRouter models:
+
+```
+OPENROUTER_API_KEY=your-key-here
+```
+
+Restart bucker and it will use the model. No key and no model? The robot
+still works with the built-in demo tasks and replays.
 
 ---
 
@@ -169,6 +181,8 @@ uv run python -m bucker.cli reconcile --dry-run
 uv run python -m scripts.backup
 ```
 
+(These need `uv` — `winget install astral-sh.uv`, or `pip install uv`.)
+
 ---
 
 ## Step 8 - Use it as an API (like OmniRoute)
@@ -179,28 +193,58 @@ free OpenRouter) automatically:
 
 ```bash
 curl http://localhost:8123/v1/chat/completions \
-  -H "Authorization: Bearer YOUR-BUCKER-API-TOKEN" \
+  -H "Authorization: Bearer YOUR-B...OKEN" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"say hi"}]}'
 ```
 
 Every call is tracked and shows up on the dashboard, with its cost.
 
-## Step 9 - Running bigger things
+---
 
-- **Graphs** - run several tasks in a smart order (some in parallel):
+## Running bigger things (full stack, advanced)
+
+The quick start above runs **lite mode**: tasks run in-process, storage
+is a local SQLite file, and code runs directly on your machine. That is
+fine for trying bucker out.
+
+For the full stack — durable crash-resume (Temporal), the Postgres event
+store, and Docker-sandboxed code execution — you need Docker Desktop
+(running) and `uv` (`winget install astral-sh.uv`):
+
+```bash
+uv sync --extra full
+uv run python -m bucker.cli setup
+uv run python -m bucker.cli dev
+```
+
+One command starts the manager (Temporal), the robot (worker), and the
+dashboard (website). It detects what is already running and only starts
+what is missing.
+
+Or run everything in containers (Docker only — nothing else needed
+locally):
+
+```bash
+docker compose up --build -d
+```
+
+That builds the database, Temporal, worker, dashboard, and the sandbox
+image. Open http://localhost:8123.
+
+**Graphs** - run several tasks in a smart order (some in parallel):
 
 ```bash
 uv run python -m bucker.cli graph run examples/graph_demo.json
 ```
 
-- **Schedules** - run a task every day at 9am:
+**Schedules** - run a task every day at 9am:
 
 ```bash
 curl -X POST "http://localhost:8123/schedules?schedule_id=daily&cron=0%209%20%2A%20%2A%20%2A&objective=fetch%20the%20weather%20report"
 ```
 
-- **MCP** - let Claude/Cursor/Hermes send tasks to the robot:
+**MCP** - let Claude/Cursor/Hermes send tasks to the robot:
 
 ```bash
 uv sync --extra mcp

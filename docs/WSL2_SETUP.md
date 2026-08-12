@@ -136,7 +136,7 @@ is simply named what you told it.
 ## 6. Install and verify
 
 ```bash
-uv sync --extra dev --extra llm
+uv sync --extra dev --extra full --extra llm
 uv run python -m pytest -q
 ```
 

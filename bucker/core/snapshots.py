@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from uuid import UUID
-
-import asyncpg
 
 from bucker.core.eventstore import EventStore
 from bucker.core.state import State, rebuild_state
+
+if TYPE_CHECKING:
+    import asyncpg
 
 #: Fold at most this many events on top of a snapshot before writing a new one.
 SNAPSHOT_INTERVAL = 50

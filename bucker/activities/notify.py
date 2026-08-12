@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from temporalio import activity
+from bucker.temporal_compat import activity
 
 
 @activity.defn

@@ -46,6 +46,23 @@ echo
 
 # ---------------- 1. find Python ----------------
 # bucker needs Python 3.11 - 3.13 (>=3.11,<3.14; tested on 3.11/3.12).
+
+# Print the exact one-liner for this machine's package manager (Windows
+# users should use start.bat, which downloads and installs Python itself).
+python_install_hint() {
+    if command -v brew >/dev/null 2>&1; then
+        echo "       macOS (Homebrew):  brew install python@3.12"
+    elif command -v apt-get >/dev/null 2>&1; then
+        echo "       Debian/Ubuntu:     sudo apt install python3.12"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "       Fedora/RHEL:       sudo dnf install python3.12"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "       Arch:              sudo pacman -S python"
+    else
+        echo "       Download from https://www.python.org/downloads/"
+    fi
+}
+
 PYTHON=""
 for candidate in python3 python; do
     if command -v "$candidate" >/dev/null 2>&1; then
@@ -56,15 +73,17 @@ done
 
 if [ -z "$PYTHON" ]; then
     echo " [1/4] Python not found."
-    echo "       Install Python 3.11-3.13 from https://www.python.org/downloads/"
-    echo "       (or: brew install python@3.12 / apt install python3.12), then re-run ./start.sh"
+    echo "       bucker needs Python 3.11-3.13. Install it with:"
+    python_install_hint
+    echo "       then re-run ./start.sh"
     exit 1
 fi
 
 # verify version: 3.11 <= ver < 3.14
 if ! "$PYTHON" -c 'import sys; sys.exit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
     echo " [1/4] Unsupported Python version ($($PYTHON --version 2>&1)); need 3.11-3.13."
-    echo "       Install Python 3.12 (brew install python@3.12 / apt install python3.12),"
+    echo "       Install Python 3.12 with:"
+    python_install_hint
     echo "       then re-run ./start.sh"
     exit 1
 fi

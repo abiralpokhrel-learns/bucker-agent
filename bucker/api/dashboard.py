@@ -14,6 +14,8 @@ from __future__ import annotations
 import html
 from typing import Any
 
+from bucker.config import settings
+
 # ------------------------------------------------------------------- theme --
 
 CSS = """
@@ -43,6 +45,9 @@ header.top .links { display: flex; gap: 2px; flex-wrap: wrap; flex: 1; }
 .nav-link:hover { color: var(--text); background: var(--panel2); text-decoration: none; }
 .nav-link.active { color: var(--text); background: var(--panel2);
                    border: 1px solid var(--border); font-weight: 600; }
+.lite-warning { background: rgba(248,81,73,.10); border: 1px solid rgba(248,81,73,.5);
+                color: var(--red); padding: 10px 14px; border-radius: 10px;
+                font-size: 13.5px; margin: 0 0 18px; line-height: 1.45; }
 h1.page-title { font-size: 22px; letter-spacing: -0.02em; margin: 0 0 18px;
                 display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 h1.page-title .tag { color: var(--muted); font-size: 12.5px; font-weight: 400; }
@@ -75,6 +80,10 @@ h1.page-title .tag { color: var(--muted); font-size: 12.5px; font-weight: 400; }
             color: var(--text); }
 .panel h2 .hint { color: var(--muted); font-weight: 400; font-size: 12px; }
 table { width: 100%; border-collapse: collapse; }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+@media (max-width: 720px) {
+  .table-wrap table { min-width: 560px; }  /* scroll, don't squish, on phones */
+}
 th { text-align: left; color: var(--muted); font-size: 11.5px;
      text-transform: uppercase; letter-spacing: 0.05em; padding: 6px 10px;
      border-bottom: 1px solid var(--border); }
@@ -131,6 +140,7 @@ pre { background: var(--panel2); border: 1px solid var(--border);
 .alert { border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13px; }
 .alert.err { background: rgba(248,81,73,.08); border: 1px solid rgba(248,81,73,.4); }
 .alert.ok { background: rgba(63,185,80,.08); border: 1px solid rgba(63,185,80,.4); }
+.alert.warn { background: rgba(240,136,62,.08); border: 1px solid rgba(240,136,62,.4); }
 /* landing hero */
 .hero { background: linear-gradient(180deg, var(--panel2), var(--panel));
         border: 1px solid var(--border); border-radius: 12px;
@@ -329,6 +339,28 @@ def _nav(active: str) -> str:
     )
 
 
+def _lite_banner() -> str:
+    """A prominent strip on every page when running in lite mode.
+
+    Lite mode executes worker code directly on the host (no container
+    isolation). The security model is the single most important thing a
+    user must know about the mode they are in, so it is rendered on every
+    dashboard page, not buried in the docs.
+    """
+    from bucker.config import settings
+
+    if settings.sandbox_mode != "local":
+        return ""
+    return (
+        '<div class="lite-warning">'
+        "⚠️ <b>LITE MODE — LOCAL EXECUTION</b> — generated code runs "
+        "directly on this computer (no container isolation). "
+        "Use only with trusted tasks. The full Docker stack is the "
+        "isolated path."
+        "</div>"
+    )
+
+
 def _page(title: str, body: str, *, active: str = "", extra_js: str = "") -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -342,6 +374,7 @@ def _page(title: str, body: str, *, active: str = "", extra_js: str = "") -> str
 <body>
 <div class="wrap">
 {_nav(active)}
+{_lite_banner()}
 {body}
 <footer>bucker-agent — every task is an append-only event stream; state is a replay of history. · <a href="/docs">api docs</a></footer>
 </div>
@@ -552,10 +585,20 @@ def render_schedules_page(
     templates = templates or []
 
     if not temporal_ok:
-        rows = ('<div class="alert err"><b>Temporal is not reachable</b> — '
-                "schedules are stored in Temporal, so they cannot be listed "
-                "or created until it is running "
-                "(<code>temporal server start-dev</code>).</div>")
+        if settings.sandbox_mode == "local":
+            # Lite mode never talks to Temporal — this is a by-design
+            # limitation, not a connectivity problem. Say so, or the user
+            # will run `temporal server start-dev` and nothing changes.
+            rows = ('<div class="alert warn"><b>Schedules are a full-stack '
+                    "feature</b> — they are stored in Temporal, which lite "
+                    "mode does not run. Start the full stack "
+                    "(<code>uv sync --extra full && uv run python -m "
+                    "bucker.cli dev</code>) for scheduled tasks.</div>")
+        else:
+            rows = ('<div class="alert err"><b>Temporal is not reachable</b> — '
+                    "schedules are stored in Temporal, so they cannot be listed "
+                    "or created until it is running "
+                    "(<code>temporal server start-dev</code>).</div>")
     elif not schedules:
         rows = '<div class="muted">no schedules yet — create one below</div>'
     else:
@@ -917,12 +960,14 @@ def render_usage_page(usage: dict) -> str:
 
 <div class="panel">
   <h2>Tokens by model <span class="hint">which API is doing the work</span></h2>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>model</th><th class="num">calls</th><th>share</th>
       <th class="num">tokens</th><th class="num">prompt / completion</th>
       <th class="num">cost</th></tr></thead>
     <tbody>{model_table}</tbody>
   </table>
+  </div>
 </div>
 
 <div class="grid2">
@@ -1352,6 +1397,21 @@ def render_new_task_page(templates: list | None = None) -> str:
         )
 
     tpl_json = __import__("json").dumps(templates)
+    # Derive the Task-type dropdown from the SAME data the cards use, so a
+    # template's task_type can never be missing from the select again (a
+    # template with an unknown option silently fell back to code_change —
+    # the "Research with citations" card could not actually create a
+    # research task). code_change stays first and default-selected.
+    type_order: list[str] = []
+    for t in [{"task_type": "code_change"}, {"task_type": "demo"}, *templates]:
+        tt = t.get("task_type")
+        if tt and tt not in type_order:
+            type_order.append(tt)
+    task_type_options = "".join(
+        f'<option value="{_esc(tt)}"{(" selected" if tt == "code_change" else "")}>'
+        f"{_esc(tt)}</option>"
+        for tt in type_order
+    )
     body = """
 <h1 class="page-title">new task <span class="tag">run the real pipeline</span></h1>
 
@@ -1366,8 +1426,7 @@ def render_new_task_page(templates: list | None = None) -> str:
     <div class="grid2">
       <label class="fld"><span>Task type</span>
         <select name="task_type">
-          <option value="code_change" selected>code_change — planner → worker → verifier</option>
-          <option value="demo">demo — 5 fake steps, noop verifier</option>
+          %(task_type_options)s
         </select></label>
       <label class="fld"><span>Verifier <span class="muted">(demo tasks only — the planner picks for code)</span></span>
         <select name="verifier">
@@ -1432,5 +1491,6 @@ async function submitTask(ev) {
   }
 }
 </script>
-""" % {"card_html": card_html, "tpl_json": tpl_json}
+""" % {"card_html": card_html, "tpl_json": tpl_json,
+       "task_type_options": task_type_options}
     return _page("New task", body, active="new task")

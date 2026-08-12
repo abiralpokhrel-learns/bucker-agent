@@ -106,7 +106,7 @@ scratch DB is too much, at minimum verify the dump restores and the
 ## Upgrades
 
 1. `git pull` / deploy new code.
-2. `uv sync --extra dev --extra llm --extra mcp`
+2. `uv sync --extra dev --extra full --extra llm --extra mcp`
 3. Backup: `uv run python -m scripts.backup`
 4. Migrations: `uv run python -m bucker.cli migrate`
 5. Restart worker + API.

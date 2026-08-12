@@ -44,6 +44,7 @@ from starlette.status import (
     HTTP_403_FORBIDDEN,
     HTTP_404_NOT_FOUND,
     HTTP_409_CONFLICT,
+    HTTP_422_UNPROCESSABLE_ENTITY,
 )
 
 from bucker.api.dashboard import (
@@ -61,8 +62,14 @@ from bucker.core.eventstore import EventStore, create_pool
 from bucker.core.snapshots import SnapshotStore
 from bucker.replay.engine import ReplayError, ReplayResult, replay_task
 from bucker.router.client import RecordingStore
+from bucker.verifiers import register_builtins
 
 # ------------------------------------------------------------------- globals --
+
+# Populate the verifier registry once at import (same pattern as
+# bucker/activities/pipeline.py) — the API validates verifier names
+# against it and must not see an empty registry.
+register_builtins()
 
 app = FastAPI(
     title="bucker-agent",
@@ -207,8 +214,9 @@ async def _startup():
         # the operator should know the token is still the default.
         print(
             "WARNING: BUCKER_API_TOKEN is the dev default ('dev-token') — "
-            "auth is BYPASSED for localhost. Set a real token before "
-            "deploying or exposing this API.",
+            "auth is BYPASSED for localhost on the dashboard/API routes, "
+            "but the OpenAI-compatible gateway (/v1/*) still requires the "
+            "token. Set a real token before deploying or exposing this API.",
             file=sys.stderr,
         )
     if _pool is not None:
@@ -321,6 +329,23 @@ async def create_task(
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     _check_auth(creds, write=True)
+
+    if verifier is not None:
+        # The dropdown on /tasks/new implies a closed set; enforce it
+        # here too, or the form is UI theater (an unknown verifier was
+        # silently persisted and "passed"). 422 with the registry list,
+        # matching FastAPI's own validation shape.
+        from bucker.verifiers import available
+
+        registered = available()
+        if verifier not in registered:
+            raise HTTPException(
+                status_code=HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"unknown verifier {verifier!r} — registered verifiers: "
+                    f"{', '.join(registered)}"
+                ),
+            )
 
     task_id, workflow_id, schedule_error = await _spawn_task(
         objective,
@@ -1411,7 +1436,12 @@ async def _index_stats() -> dict:
     cost_by_type = [(k, v, (v / max_cost * 100) if max_cost else 0) for k, v in cost_by_type]
 
     per_day = [
-        (r["d"].isoformat(), int(r["n"])) for r in day_rows
+        # asyncpg returns a datetime; the lite sqlite pool returns the
+        # stored TEXT (already ISO). Accept both — this was a home-page
+        # 500 in lite mode once any task existed.
+        (r["d"].isoformat() if hasattr(r["d"], "isoformat") else str(r["d"]),
+         int(r["n"]))
+        for r in day_rows
     ]
     max_day = max((n for _, n in per_day), default=0)
     per_day = [(d, n, (n / max_day * 100) if max_day else 0) for d, n in per_day]

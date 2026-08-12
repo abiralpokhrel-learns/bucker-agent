@@ -16,12 +16,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-import asyncpg
-
 from bucker.core.events import SCHEMA_VERSION, EventType
+
+if TYPE_CHECKING:
+    import asyncpg
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +184,8 @@ async def create_pool(dsn: str, *, min_size: int = 1, max_size: int = 10):
         pool = LitePool(sqlite_url_to_path(dsn))
         await pool.init_schema()
         return pool
+
+    import asyncpg  # postgres backend only (bucker[full])
 
     async def _init(conn: asyncpg.Connection) -> None:
         await conn.set_type_codec(

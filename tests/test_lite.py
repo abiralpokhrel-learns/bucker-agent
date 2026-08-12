@@ -17,7 +17,7 @@ import pytest
 from bucker.core.eventstore import EventStore, create_pool
 from bucker.core.snapshots import SnapshotStore
 from bucker.core.state import rebuild_state
-from bucker.lite.pool import LitePool, translate_sql
+from bucker.lite.pool import LitePool, reorder_params, translate_sql
 from bucker.sandbox.local import LocalSandbox
 
 
@@ -59,6 +59,55 @@ def test_translate_minutes_concat_interval():
 
 def test_translate_current_date():
     assert "date('now')" in translate_sql("WHERE created_at >= CURRENT_DATE")
+
+
+# ------------------------------------------------- placeholder ordering ---
+
+
+def test_reorder_params_identity_for_in_order_placeholders():
+    """$1, $2, $3 queries bind positionally in both dialects — no change."""
+    sql = "INSERT INTO t (a, b) VALUES ($1, $2)"
+    assert reorder_params(sql, ("x", "y")) == ("x", "y")
+
+
+def test_reorder_params_swaps_out_of_order_placeholders():
+    """asyncpg binds $N by number wherever it appears; sqlite binds ? in
+    text order. `SET status = $2 WHERE id = $1` must therefore bind
+    args[1] to status and args[0] to id — the graph-status bug: without
+    this, the terminal UPDATE silently matched zero rows."""
+    sql = "UPDATE tasks SET status = $2 WHERE id = $1"
+    assert reorder_params(sql, ("task-123", "completed")) == ("completed", "task-123")
+
+
+def test_reorder_params_handles_repeated_placeholder():
+    sql = "SELECT 1 WHERE a = $1 OR b = $1"
+    assert reorder_params(sql, ("only",)) == ("only", "only")
+
+
+def test_reorder_params_handles_multi_digit_indexes():
+    sql = "SELECT * FROM t WHERE a = $10 AND b = $2"
+    args = tuple(f"arg{i}" for i in range(1, 11))
+    out = reorder_params(sql, args)
+    assert out[0] == "arg10"  # $10's slot gets the 10th param
+    assert out[1] == "arg2"  # $2's slot gets the 2nd param
+
+
+@pytest.mark.asyncio
+async def test_out_of_order_update_actually_sticks(lite_db):
+    """End-to-end: an asyncpg-style $2-before-$1 UPDATE must change the row."""
+    pool = await lite_db()
+    task_id = uuid4()
+    await pool.execute(
+        "INSERT INTO tasks (id, task_type, objective, status) "
+        "VALUES ($1, $2, $3, 'pending')",
+        task_id, "demo", "out-of-order update",
+    )
+    await pool.execute(
+        "UPDATE tasks SET status = $2 WHERE id = $1", task_id, "failed"
+    )
+    got = await pool.fetchval("SELECT status FROM tasks WHERE id = $1", task_id)
+    assert got == "failed"
+    await pool.close()
 
 
 # --------------------------------------------------------------- storage ---

@@ -10,11 +10,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from temporalio import activity
-
 from bucker.activities.demo import get_store
 from bucker.core.events import EventType
 from bucker.core.tasks import register_task
+from bucker.temporal_compat import activity
 
 
 @activity.defn
@@ -55,3 +54,22 @@ async def record_graph_step(
         },
         idempotency_key=f"{graph_task_id}:graph-{step_id}-{status}",
     )
+
+    # The __graph__ bookend is the graph task's terminal event. The event
+    # is the source of truth; tasks.status is a denormalized cache for
+    # listing/queries. Keep the cache honest here (same pattern as
+    # record_task_completed / record_decision) — without this, a finished
+    # graph stays "pending" in the /tasks list forever even though the
+    # folded state (events) says otherwise.
+    if step_id == "__graph__" and status in ("completed", "failed"):
+        failed = (detail or {}).get("failed") or []
+        row_status = "failed" if (status == "failed" or failed) else "completed"
+        try:
+            async with store._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE tasks SET status = $2 WHERE id = $1",
+                    UUID(graph_task_id),
+                    row_status,
+                )
+        except Exception:  # noqa: BLE001 — event already recorded; cache is best-effort
+            pass

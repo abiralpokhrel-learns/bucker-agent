@@ -14,9 +14,11 @@ Design:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-import asyncpg
+if TYPE_CHECKING:
+    import asyncpg
 
 
 async def record_model_call(

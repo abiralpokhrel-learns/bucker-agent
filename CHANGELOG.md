@@ -8,18 +8,108 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **One-command onboarding** — `bucker dev` is now THE command: first run
-  auto-bootstraps (prereq checks → uv auto-install prompt → `.env` + token
-  → Postgres → migrations) then starts the whole stack and opens the
-  dashboard in your browser; later runs just start the stack. First-run
-  detection is real (no `.env` / DB down / unapplied migrations →
-  bootstrap). New flags: `--force-setup`, `--no-browser`; `--dry-run`
-  reports whether setup is needed. Platform launchers `start.sh` /
-  `start.bat` install uv if missing; `Makefile` (`make dev`); `.env`
-  generation and Docker prompts now offer to act (install uv / open the
-  Docker download page) instead of only printing instructions.
+- **Lite path is now genuinely light** — `temporalio` and `asyncpg` moved
+  out of the core install into a new `full` extra. Lite mode (SQLite +
+  in-process runner + local sandbox) needs neither: `bucker/temporal_compat.py`
+  stubs the Temporal decorators when the SDK is absent (decorators become
+  identity, real calls raise a clear error), and the asyncpg imports are
+  lazy / `TYPE_CHECKING`-only. `pip install bucker-agent` stays minimal;
+  `pip install bucker-agent[full]` (or `uv sync --extra full`) is required
+  for the Temporal + Postgres stack. CI proves it: a new `lite-smoke` job
+  installs base deps ONLY (guard asserts no temporalio/asyncpg present),
+  boots `bucker lite`, runs a demo task end to end, and checks the event
+  stream.
+- **Launcher CI** — a new `launcher-windows` job runs the lite smoke
+  through the real `start.bat` on `windows-latest`, exercising the exact
+  double-click sequence (Python gate → venv → pip install → `bucker lite`).
+  `scripts/ci_lite_smoke.py` is the shared harness (boot → demo task →
+  verdict → event stream → kill).
+- **Lite-mode security warnings** — the dashboard renders a red
+  "LITE MODE — LOCAL EXECUTION" strip on every page when
+  `BUCKER_SANDBOX_MODE=local`, and `bucker lite` prints the warning at
+  startup. The README now carries a ⚠️ callout in the quickstart and a
+  top-level **Known limitations** section (lite sandbox is not a security
+  boundary, schedules need the full stack, experimental pieces, M2
+  numbers unpublished, replay needs a prior live run).
+- **`docker compose up --build` is truly one command** — a `sandbox`
+  build-carrier service composes `bucker-sandbox:latest` (previously a
+  hidden manual `docker build` prerequisite); the container exits
+  immediately and the worker keeps launching sandboxes via the host
+  socket.
+- **`start.sh` gives the right Python install hint per platform** —
+  detects brew/apt/dnf/pacman and prints the exact one-liner (Windows
+  keeps `start.bat`, which auto-installs).
+
+### Changed
+
+- **Port consistency** — README and DEPLOYMENT docs now use `8123`
+  everywhere (the launcher/dashboard default); the API/uvicorn examples
+  no longer contradict the quickstart with `8000`.
+- **`README-SIMPLE.md` rewritten lite-first** — install is "one thing:
+  Python 3.11–3.13" and the quick start is `start.bat` / `./start.sh`;
+  Docker + uv live in a clearly-labelled "full stack (advanced)" section.
+  The old Docker-and-uv "Step 1" that contradicted the launchers is gone.
+- Full-stack doc commands (`docs/DEPLOYMENT.md`, `docs/OPERATIONS.md`,
+  `docs/WSL2_SETUP.md`, README full-stack sections) now include
+  `--extra full` so the Temporal/Postgres clients are actually installed.
+- `/usage` token-by-model table wrapped in a scroll container
+  (`overflow-x: auto`, min-width on narrow viewports) so phones scroll
+  instead of squishing.
 
 ### Fixed
+
+- **Graph tasks never left `pending`** (the headline reviewer bug) — the
+  state fold's `_graph_step_completed` was purely informational, and the
+  graph runner never emitted a terminal event, so a graph task folded to
+  `pending` forever no matter what its steps did (children could be long
+  `failed` while the parent never moved; the dashboard polled forever).
+  The `__graph__` bookend now folds into task status (`started` →
+  `in_progress`; `completed`/`failed` → terminal, with a graph that had
+  failing steps reported as `failed`), and `record_graph_step` keeps the
+  denormalized `tasks.status` row honest at the bookend, so `/tasks` list
+  and `/tasks/{id}` agree. Regression tests in `tests/test_state.py`.
+- **Lite SQL translator bound out-of-order placeholders wrong** (found
+  while fixing the graph row update) — `translate_sql` replaced `$N`
+  with `?` in appearance order, so a query like
+  `SET status = $2 WHERE id = $1` silently bound the wrong args and
+  updated zero rows. New `reorder_params()` in `bucker/lite/pool.py`
+  reorders args to parameter order; unit + end-to-end tests in
+  `tests/test_lite.py`.
+- **Home page 500 in lite mode once any task existed** — `_index_stats`
+  called `.isoformat()` on the per-day date, but the sqlite pool returns
+  TEXT while asyncpg returns datetime. Accept both.
+- **`/tasks/new` template dropdown could not produce a research task** —
+  the Task-type `<select>` hardcoded `code_change`/`demo`, so the
+  "Research with citations" card silently submitted as `code_change`
+  (DOM no-op). Options are now generated from the same template registry
+  the cards use, so they cannot drift again.
+- **`verifier` was decorative** — the API accepted and persisted any
+  string while the form implied a closed set. Now validated against the
+  verifier registry (422 + the list), and the registry is populated at
+  API startup (`register_builtins()`), which it previously was not.
+- **CLI full-stack commands crashed raw in lite mode** — `bucker start`
+  and `bucker graph run` leaked asyncpg/temporalio tracebacks. They now
+  detect lite mode (and unreachable Postgres) and print the same
+  actionable hint the HTTP API gives, pointing at
+  `curl localhost:8123/...` or `uv sync --extra full && bucker dev`.
+- **Schedules page blamed a connectivity problem for a by-design lite
+  limitation** — the HTML page said "Temporal is not reachable — run
+  `temporal server start-dev`" (which cannot fix lite mode); it now says
+  schedules are a full-stack feature, matching the JSON API's message.
+- **Auth banner overpromised** — "auth is BYPASSED for localhost" is not
+  true of the OpenAI-compatible gateway (`/v1/*`), which always requires
+  the token; the banner now says so.
+- **`Structured extraction` template copy promised a schema verifier
+  that does not exist** (registered verifiers: `noop`,
+  `python_test_runner`, `citation_checker`) — the description now states
+  what actually happens (tests the worker writes are verified).
+
+- **`scripts/doctor.py` was Windows-only** — every venv check hardcoded
+  `.venv/Scripts/python.exe`, so on Linux/macOS/WSL2 doctor reported
+  ".venv is missing" even after a correct `uv sync` and skipped every
+  downstream check. The venv layout and pyvenv.cfg base-interpreter name
+  are now platform-aware (`os.name`); regression tests in
+  `tests/test_doctor.py` cover both layouts.
 
 - **CI sandbox image** — GitHub Actions never built `bucker-sandbox:latest`;
   tests that docker-run real sandbox containers failed with "Unable to find

@@ -25,6 +25,7 @@ Checks, in order:
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,33 @@ ESSENTIAL_FAILED = False
 #: False, every check that spawns the venv python is skipped — the doctor
 #: must still work when the thing it diagnoses is a dead venv.
 VENV_OK = False
+
+
+def _venv_layout() -> tuple[str, str]:
+    """(scripts_dir, python_exe) for this platform, as plain strings.
+
+    Windows venvs put the interpreter at ``.venv/Scripts/python.exe``;
+    POSIX (Linux/macOS/WSL2) at ``.venv/bin/python``. Hardcoding either
+    layout makes doctor lie on the other platform — the whole point of
+    this tool is to report the truth about the local setup. Kept as a
+    pure string tuple so the platform logic is unit-testable without
+    constructing platform-flavoured paths.
+    """
+    if os.name == "nt":
+        return "Scripts", "python.exe"
+    return "bin", "python"
+
+
+def venv_python() -> Path:
+    """The project venv's interpreter, for this platform."""
+    scripts, exe = _venv_layout()
+    return ROOT / ".venv" / scripts / exe
+
+
+def base_interpreter(home: str) -> Path:
+    """The base interpreter named by pyvenv.cfg, for this platform."""
+    _, exe = _venv_layout()
+    return Path(home) / exe
 
 
 def report(kind: str, label: str, detail: str = "") -> None:
@@ -73,7 +101,7 @@ def check_uv_and_venv() -> None:
                "C:\\Users\\<you>\\AppData\\Local\\Python\\pythoncore-3.14-64) "
                "to PATH for plain `python`/`pip` usage")
 
-    venv_py = ROOT / ".venv" / "Scripts" / "python.exe"
+    venv_py = venv_python()
     if not venv_py.exists():
         report("FAIL", ".venv is missing", "run: uv sync --extra dev")
         return
@@ -83,7 +111,7 @@ def check_uv_and_venv() -> None:
         for line in cfg.read_text(encoding="utf-8").splitlines():
             if line.startswith("home ="):
                 home = line.split("=", 1)[1].strip()
-    base = Path(home) / "python.exe" if home else None
+    base = base_interpreter(home) if home else None
     if not base or not base.exists():
         report("FAIL", "venv base interpreter is missing",
                f"pyvenv.cfg home = {home or '(unset)'} — "
@@ -124,7 +152,7 @@ def check_uv_and_venv() -> None:
 
 
 def check_imports() -> None:
-    venv_py = ROOT / ".venv" / "Scripts" / "python.exe"
+    venv_py = venv_python()
     probe = _run([
         str(venv_py), "-c",
         "import fastapi, pydantic, asyncpg; print('core imports ok')",
@@ -145,7 +173,7 @@ def check_imports() -> None:
 
 
 def check_config() -> None:
-    venv_py = ROOT / ".venv" / "Scripts" / "python.exe"
+    venv_py = venv_python()
     probe = _run([
         str(venv_py), "-c",
         "from bucker.config import DOTENV_LOADED, DOTENV_ERROR, settings; "
@@ -173,8 +201,6 @@ def check_config() -> None:
     # AppData\\Roaming\\uv\\python gets ACL-locked on Windows and the venv
     # trampoline cannot spawn it; the fix is a per-user interpreter + this
     # env var pointing at Local. Diagnose the failure mode directly.
-    import os
-
     uv_install = os.environ.get("UV_PYTHON_INSTALL_DIR", "")
     if not uv_install:
         report("WARN", "UV_PYTHON_INSTALL_DIR is not set",
@@ -202,7 +228,7 @@ def check_docker() -> None:
 
 
 def check_postgres() -> None:
-    venv_py = ROOT / ".venv" / "Scripts" / "python.exe"
+    venv_py = venv_python()
     # NOTE: real newlines, not ';' — 'async def' is a compound statement and
     # cannot follow a semicolon on the same line (SyntaxError).
     probe = _run([
@@ -228,7 +254,7 @@ def check_postgres() -> None:
 
 
 def check_temporal() -> None:
-    venv_py = ROOT / ".venv" / "Scripts" / "python.exe"
+    venv_py = venv_python()
     probe = _run([
         str(venv_py), "-c",
         "import asyncio\n"
@@ -250,7 +276,7 @@ def check_temporal() -> None:
 
 
 def check_ollama() -> None:
-    venv_py = ROOT / ".venv" / "Scripts" / "python.exe"
+    venv_py = venv_python()
     probe = _run([
         str(venv_py), "-c",
         "import asyncio; "
@@ -273,7 +299,7 @@ def check_ollama() -> None:
 
 
 def check_model_chain() -> None:
-    venv_py = ROOT / ".venv" / "Scripts" / "python.exe"
+    venv_py = venv_python()
     probe = _run([
         str(venv_py), "-c",
         "from bucker.config import settings; "

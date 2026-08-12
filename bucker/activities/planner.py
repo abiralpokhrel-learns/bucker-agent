@@ -9,13 +9,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from temporalio import activity
-
 from bucker.activities.demo import get_blobs, get_store
 from bucker.core.events import EventType
 from bucker.core.telemetry import record_model_call
 from bucker.planner import PlanningFailed, generate_task_contract
 from bucker.router.client import ModelRouter
+from bucker.temporal_compat import activity
 
 
 @activity.defn

@@ -132,3 +132,72 @@ def test_every_event_type_has_a_handler():
 
     missing = [e.value for e in EventType if e.value not in HANDLERS]
     assert not missing, f"EventTypes without fold handlers: {missing}"
+
+
+# ---------------------------------------------------------------- graphs --
+
+def _graph_events(final_status: str = "completed", failed: list[str] | None = None):
+    """A realistic graph-task stream: created, bookends, per-step events.
+
+    Mirrors what bucker/activities/graph.py's record_graph_step emits —
+    including the __graph__ bookends whose detail carries the failure list.
+    """
+    failed = failed or []
+    return [
+        make_event(1, EventType.TASK_CREATED, {
+            "objective": "graph: calc-refactor-demo (3 steps)",
+            "task_type": "graph",
+            "verifier": None,
+        }),
+        make_event(2, EventType.GRAPH_STEP_COMPLETED, {
+            "step_id": "__graph__", "status": "started",
+            "detail": {"name": "calc-refactor-demo", "steps": 3},
+        }),
+        make_event(3, EventType.GRAPH_STEP_COMPLETED, {
+            "step_id": "add-sub", "status": "completed", "detail": {"task_id": "1"},
+        }),
+        make_event(4, EventType.GRAPH_STEP_COMPLETED, {
+            "step_id": "add-mul", "status": "completed", "detail": {"task_id": "2"},
+        }),
+        make_event(5, EventType.GRAPH_STEP_COMPLETED, {
+            "step_id": "verify-both", "status": "completed", "detail": {"task_id": "3"},
+        }),
+        make_event(6, EventType.GRAPH_STEP_COMPLETED, {
+            "step_id": "__graph__", "status": final_status,
+            "detail": {"steps": 3, "failed": failed},
+        }),
+    ]
+
+
+def test_graph_task_reaches_terminal_status_when_all_steps_pass():
+    """The graph task must NOT stay pending: a clean run folds to completed."""
+    state = rebuild_state(_graph_events())
+    assert state["status"] == "completed"
+    assert len(state["graph_steps"]) == 5
+
+
+def test_graph_task_fails_when_any_step_failed():
+    """A graph whose steps failed is a FAILED graph task, even though the
+    run itself finished — status must report the outcome."""
+    state = rebuild_state(_graph_events(failed=["add-mul"]))
+    assert state["status"] == "failed"
+    assert state["graph_summary"]["detail"]["failed"] == ["add-mul"]
+
+
+def test_graph_task_failed_bookend_folds_to_failed():
+    """The early-exit bookend (parse/validation error) folds to failed."""
+    state = rebuild_state(_graph_events(final_status="failed"))
+    assert state["status"] == "failed"
+
+
+def test_graph_task_in_progress_during_run():
+    """The started bookend moves the task from pending to in_progress."""
+    state = rebuild_state(_graph_events()[:2])
+    assert state["status"] == "in_progress"
+
+
+def test_per_step_graph_events_do_not_change_status():
+    """Per-step events are informational; status only moves on bookends."""
+    events = _graph_events()[:5]  # created + started + 3 steps, no final bookend
+    state = rebuild_state(events)
+    assert state["status"] == "in_progress"  # still running, not completed

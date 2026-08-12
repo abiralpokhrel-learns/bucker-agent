@@ -27,8 +27,6 @@ classifiers = [
 ]
 
 dependencies = [
-    "temporalio>=1.7",
-    "asyncpg>=0.29",
     "pydantic>=2.7",
     "jsonschema>=4.22",
     "fastapi>=0.111",
@@ -41,6 +39,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Full-stack infrastructure. Lite mode (``bucker lite``: SQLite + in-process
+# runner + local sandbox) needs NEITHER of these — bucker/temporal_compat.py
+# stubs the Temporal decorators and the asyncpg imports are lazy, so the lite
+# install stays genuinely light. `pip install bucker-agent[full]` (or
+# `uv sync --extra full`) is required for the Temporal + Postgres stack.
+full = [
+    "temporalio>=1.7",
+    "asyncpg>=0.29",
+]
 # Phase 1 onward. Kept out of the core install so Phase 0 stays lean.
 llm = ["litellm>=1.40"]
 # MCP server (bucker/mcp/server.py): expose verified tasks to other agents

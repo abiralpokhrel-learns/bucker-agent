@@ -10,10 +10,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Install the package itself (llm extra = provider SDKs) + uvicorn
+# Install the package itself (full = Temporal+Postgres, llm = provider SDKs) + uvicorn
 COPY pyproject.toml uv.lock README.md ./
 COPY bucker ./bucker
-RUN pip install --no-cache-dir ".[llm]" uvicorn
+RUN pip install --no-cache-dir ".[full,llm]" uvicorn
 
 ENV BUCKER_BLOB_ROOT=/data/blobs \
     BUCKER_MEMORY_ROOT=/data/memory \

@@ -43,7 +43,7 @@ def _iso_now() -> str:
 
 
 #: asyncpg ``$1`` placeholders -> sqlite ``?``.
-_PLACEHOLDER = re.compile(r"\$\d+")
+_PLACEHOLDER = re.compile(r"\$(\d+)")
 #: asyncpg type casts appended to literals/params; sqlite has no such thing.
 #: ``::interval`` MUST come before ``::int`` (alternation is ordered, and
 #: ``::int`` would otherwise match the prefix of ``::interval``).
@@ -73,6 +73,25 @@ def translate_sql(sql: str) -> str:
     for pattern, replacement in _DATE_FIXES:
         sql = pattern.sub(replacement, sql)
     return _PLACEHOLDER.sub("?", sql)
+
+
+def reorder_params(sql: str, args: tuple[Any, ...]) -> tuple[Any, ...]:
+    """Bind args in sqlite's order when placeholders are out of numeric order.
+
+    asyncpg numbers placeholders (``$1``, ``$2``, ...) and binds
+    ``args[0]`` to ``$1`` regardless of where it appears in the SQL.
+    sqlite binds ``?`` positionally, in text order. For the usual
+    ``$1, $2, $3`` queries the two orders coincide; for a query like
+    ``SET status = $2 WHERE id = $1`` they do not — naive ``$N -> ?``
+    translation would bind ``args[0]`` to ``status`` and ``args[1]`` to
+    ``id``, silently updating zero rows (the graph-status bug this fixes:
+    the terminal status UPDATE matched nothing and the graph stayed
+    ``pending`` in the /tasks list forever).
+    """
+    numbers = [int(m.group(1)) for m in _PLACEHOLDER.finditer(sql)]
+    if not numbers or numbers == list(range(1, len(numbers) + 1)):
+        return args  # common case: already in parameter order
+    return tuple(args[n - 1] for n in numbers)
 
 
 class LiteRow:
@@ -184,6 +203,7 @@ class LiteConnection:
     # ------------------------------------------------------------- exec ----
     async def execute(self, sql: str, *args: Any) -> str:
         """Run a statement; return a pseudo-command-tag like asyncpg."""
+        args = reorder_params(sql, args)  # must run BEFORE translation
         sql = translate_sql(sql)
         sqlite_args = [_encode_param(a) for a in args]
         await asyncio.to_thread(self._run, sql, sqlite_args)
@@ -205,6 +225,7 @@ class LiteConnection:
         return row[0]
 
     async def fetch(self, sql: str, *args: Any) -> list[LiteRow]:
+        args = reorder_params(sql, args)  # must run BEFORE translation
         sql = translate_sql(sql)
         sqlite_args = [_encode_param(a) for a in args]
         return await asyncio.to_thread(self._fetch, sql, sqlite_args)

@@ -17,8 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
-from temporalio import workflow
-from temporalio.common import RetryPolicy
+from bucker.temporal_compat import RetryPolicy, workflow
 
 with workflow.unsafe.imports_passed_through():
     from bucker.activities.demo import (

@@ -46,6 +46,26 @@ evidence-based improvement is what the system actually *is*.
 > (live smoke runs), graph orchestration, human-in-the-loop, and the
 > hardening pass. Treat everything beyond that as experimental.
 
+## Known limitations
+
+Read this before trusting bucker with real work:
+
+- **Lite mode is NOT a security boundary.** `bucker lite` runs
+  worker-produced code directly on the host (scratch dir, no container).
+  Use it only for code you trust. The Docker sandbox in the full stack
+  (`--network none`, unprivileged) is the real isolation boundary.
+- **Schedules need the full stack.** Recurring tasks and Temporal-backed
+  durability are full-stack (Docker + Temporal + Postgres) features only.
+- **Experimental pieces.** Graph orchestration, memory/skills, adaptive
+  mode, and the MCP server are first implementations — treat their
+  behavior as provisional until they accumulate live mileage.
+- **No published benchmark numbers yet.** The M2 gate (paired SWE-bench
+  evaluation) is the go/no-go; until it lands, treat performance claims
+  as aspirational.
+- **Recorded mode needs a prior live run.** The zero-key replay path
+  works once recordings exist; the first run of a given task shape must
+  be live with a real model.
+
 ## Contents
 
 - [Quickstart](#quickstart-5-minutes)
@@ -103,9 +123,10 @@ configuration. `code_change` tasks need a model key in `.env`
 (`DEEPSEEK_API_KEY`, or `OPENROUTER_API_KEY`) — set them and restart, or
 see the full setup below.
 
-Lite mode runs the worker's code directly on the host in a scratch
-folder (no container isolation) — use it for code you trust. The full
-Docker stack below is the isolated, production path.
+> **⚠️ LITE MODE RUNS CODE ON YOUR MACHINE.** Lite mode executes the
+> worker's code directly on the host in a scratch folder — no container
+> isolation. Use it only for tasks you trust. The full Docker stack
+> below is the isolated, production path (see [Known limitations](#known-limitations)).
 
 ### Full stack (Docker + Temporal — durable, isolated)
 
@@ -116,6 +137,7 @@ it installs `uv` itself):
 
 ```bash
 git clone https://github.com/abiralpokhrel-learns/bucker-agent && cd bucker-agent
+uv sync --extra full            # full-stack deps: Temporal + Postgres clients
 uv run python -m bucker.cli dev     # Windows PowerShell: use the uv command above
 # first run:  prerequisites -> .env + token -> Postgres -> migrations ->
 #             Temporal + worker + dashboard (opens in your browser)
@@ -174,7 +196,7 @@ without starting the stack), `bucker dev --dry-run` shows the plan, and
 machine.
 
 ```bash
-uv sync
+uv sync --extra full            # full stack: Temporal + Postgres clients
 uv run python -m bucker.cli setup    # checks, .env + token, Postgres, migrations
 docker compose up -d                 # Postgres (setup/dev do this too)
 temporal server start-dev            # Temporal UI at http://localhost:8233
@@ -330,7 +352,7 @@ setups — both are avoidable:
    ```powershell
    winget install Python.Python.3.12
    python -m venv --clear .venv          # real python.exe, no uv launcher
-   uv sync --extra dev --extra llm
+   uv sync --extra dev --extra full --extra llm
    ```
 
 2. **Point uv's managed-python storage away from the locked dir** so `uv
@@ -523,7 +545,7 @@ covers the run and each step replays independently.
 ```bash
 bucker graph run examples/graph_demo.json
 # or over the API:
-curl -X POST http://localhost:8000/graphs -H "Content-Type: application/json" \
+curl -X POST http://localhost:8123/graphs -H "Content-Type: application/json" \
      -d @examples/graph_demo.json
 ```
 
@@ -592,8 +614,8 @@ with a note; the verdict is append-only and the task becomes
 verdicts so the audit trail can never confuse the two.
 
 ```bash
-curl -X POST http://localhost:8000/tasks/<id>/approve?note=looks+right
-curl -X POST http://localhost:8000/tasks/<id>/reject?note=wrong+approach
+curl -X POST http://localhost:8123/tasks/<id>/approve?note=looks+right
+curl -X POST http://localhost:8123/tasks/<id>/reject?note=wrong+approach
 ```
 
 The task dashboard shows approve/reject buttons on escalated tasks, the
@@ -628,7 +650,7 @@ append-only event store — exporting never mutates anything.
 
 One platform, four doors:
 
-- **Web dashboard** — `uv run uvicorn bucker.api.app:app --port 8000`
+- **Web dashboard** — `uv run uvicorn bucker.api.app:app --port 8123`
   (overview, tasks, models, memory, skills, schedules, system)
 - **CLI** — `bucker` (start/show/events/replay/tasks/usage/models/
   providers/setup/memory/skills/schedules/export/doctor)
@@ -712,9 +734,9 @@ bucker doctor               # diagnose a broken setup
 The dashboard is server-rendered HTML — no frontend build step.
 
 ```bash
-uv run uvicorn bucker.api.app:app --port 8000
-open http://localhost:8000/          # aggregate dashboard
-open http://localhost:8000/tasks/new # create a task from the browser
+uv run uvicorn bucker.api.app:app --port 8123
+open http://localhost:8123/          # aggregate dashboard
+open http://localhost:8123/tasks/new # create a task from the browser
 ```
 
 | Page | What it shows |
@@ -730,21 +752,21 @@ The same surface works as a JSON API:
 
 ```bash
 # create a real code task (the planner picks the verifier)
-curl -X POST "http://localhost:8000/tasks?objective=Add%20a%20subtract%20function%20to%20calc.py&budget_usd=0.50&deadline_minutes=10"
+curl -X POST "http://localhost:8123/tasks?objective=Add%20a%20subtract%20function%20to%20calc.py&budget_usd=0.50&deadline_minutes=10"
 
 # list tasks with cost + event counts; filter by status
-curl "http://localhost:8000/tasks?status=completed"
+curl "http://localhost:8123/tasks?status=completed"
 
 # the audit trail, and a deterministic replay from recordings
-curl "http://localhost:8000/tasks/<id>/events"
-curl -X POST "http://localhost:8000/tasks/<id>/replay"
+curl "http://localhost:8123/tasks/<id>/events"
+curl -X POST "http://localhost:8123/tasks/<id>/replay"
 
 # control: re-run a finished task (new task, same objective), cancel a running one
-curl -X POST "http://localhost:8000/tasks/<id>/rerun"
-curl -X POST "http://localhost:8000/tasks/<id>/cancel"
+curl -X POST "http://localhost:8123/tasks/<id>/rerun"
+curl -X POST "http://localhost:8123/tasks/<id>/cancel"
 
 # system health as JSON
-curl "http://localhost:8000/api/system"
+curl "http://localhost:8123/api/system"
 ```
 
 A re-run is honest by construction: the original event stream is append-only
@@ -768,7 +790,7 @@ uv run python -m bucker.cli start --code --objective "..." --max-retries 3
 uv run python -m bucker.cli start --code --objective "..." --adaptive
 
 # same, via the API
-curl -X POST "http://localhost:8000/tasks?objective=...&adaptive=true"
+curl -X POST "http://localhost:8123/tasks?objective=...&adaptive=true"
 ```
 
 ## Testing

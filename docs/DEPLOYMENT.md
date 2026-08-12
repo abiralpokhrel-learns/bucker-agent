@@ -72,11 +72,11 @@ not the sandbox, is then your only check on model output.
 ## Running it
 
 ```bash
-uv sync --extra dev --extra llm
+uv sync --extra dev --extra full --extra llm
 uv run python -m bucker.cli migrate          # as the OWNER role (DDL rights)
 uv run python -m scripts.doctor              # diagnose a broken setup, fails cleanly
 BUCKER_MODEL_MODE=live uv run python -m bucker.worker &
-uv run uvicorn bucker.api.app:app --host 127.0.0.1 --port 8000
+uv run uvicorn bucker.api.app:app --host 127.0.0.1 --port 8123
 ```
 
 `BUCKER_MODEL_MODE=live` makes the worker call the real provider; the

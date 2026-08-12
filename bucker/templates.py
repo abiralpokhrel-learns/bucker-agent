@@ -72,8 +72,9 @@ TEMPLATES: dict[str, dict[str, Any]] = {
     "data-extraction": {
         "name": "Structured extraction",
         "description": (
-            "Turn unstructured input into a validated schema. The verifier "
-            "checks shape, types, and required fields."
+            "Turn unstructured input into a structured format. The "
+            "verifier runs the tests the worker writes against the stated "
+            "schema — a task that skips the checks cannot pass."
         ),
         "objective": (
             "Extract the requested fields into the specified structured "

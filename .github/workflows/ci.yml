@@ -27,7 +27,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v3
       - run: uv python install 3.12
-      - run: uv sync --extra dev
+      - run: uv sync --extra dev --extra full
 
       - name: Lint
         run: uv run ruff check .
@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
       - run: uv python install 3.12
-      - run: uv sync --extra dev
+      - run: uv sync --extra dev --extra full
 
       - name: Install Temporal CLI
         run: |
@@ -105,3 +105,57 @@ jobs:
         env:
           BUCKER_DATABASE_URL: postgresql://bucker_app:dev@localhost:5432/bucker
         run: uv run python -m tests.crash_test
+
+  # The lite path is what a fresh user actually runs: zero infrastructure,
+  # base dependencies only. This job is the regression gate for the
+  # dependency split — bucker lite must work with NO temporalio/asyncpg
+  # installed (bucker/temporal_compat.py + lazy imports), not just without
+  # their services. If this goes red, "nothing but Python" is a lie again.
+  lite-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      # Base deps ONLY — no --extra full, no dev group.
+      - run: uv sync --no-group dev
+
+      - name: Guard — the base install must not pull full-stack packages
+        run: |
+          uv run python - <<'EOF'
+          import importlib.util as u
+          for pkg in ("temporalio", "asyncpg"):
+              assert u.find_spec(pkg) is None, f"{pkg} leaked into base deps"
+          print("base install is light: no temporalio, no asyncpg")
+          EOF
+
+      - name: Lite smoke — boot, demo task, verify, event stream
+        run: uv run python scripts/ci_lite_smoke.py
+
+      - name: Upload lite server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lite-smoke-log
+          path: lite-smoke.log
+
+  # The Windows launcher (start.bat) is the beginner path and must work on
+  # a fresh machine. start.bat itself finds/checks Python, creates .venv,
+  # pip-installs, and starts bucker lite — the full double-click sequence.
+  launcher-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lite smoke through the real launcher (start.bat)
+        shell: pwsh
+        env:
+          LITE_CMD: cmd /c start.bat
+        run: python scripts/ci_lite_smoke.py
+
+      - name: Upload launcher log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-windows-log
+          path: lite-smoke.log

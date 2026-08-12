@@ -174,12 +174,33 @@ def _critique_completed(s: State, e: Event) -> None:
 
 
 def _graph_step_completed(s: State, e: Event) -> None:
-    """Informational: one DAG step finished. Does not change task status."""
+    """One DAG step finished — including the graph task's own bookends.
+
+    Every event a graph task emits is a GRAPH_STEP_COMPLETED: one per DAG
+    step, plus the special ``__graph__`` lifecycle events — "started", then
+    a terminal "completed"/"failed" whose detail carries the sorted list
+    of failed step ids. Nothing else in a graph stream can set task
+    status, so the ``__graph__`` bookend MUST fold into ``s["status"]``:
+    before this, a graph task folded to ``pending`` forever no matter what
+    its steps did (children could be long ``failed`` while the parent
+    never moved — the reviewer-reported bug fixed here).
+    """
+    step_id = e.payload.get("step_id")
+    status = e.payload.get("status")
     steps = s.setdefault("graph_steps", [])
-    steps.append({
-        "step_id": e.payload.get("step_id"),
-        "status": e.payload.get("status"),
-    })
+    steps.append({"step_id": step_id, "status": status})
+    if step_id != "__graph__":
+        return  # per-step detail is informational only
+    if status == "started":
+        s["status"] = "in_progress"
+        return
+    if status in ("completed", "failed"):
+        detail = e.payload.get("detail") or {}
+        step_failures = detail.get("failed") or []
+        # A graph that ran but had failing steps is a FAILED graph task —
+        # status must be honest about the outcome, not about the run.
+        s["status"] = "failed" if (status == "failed" or step_failures) else "completed"
+        s["graph_summary"] = e.payload
 
 
 def _human_approved(s: State, e: Event) -> None:

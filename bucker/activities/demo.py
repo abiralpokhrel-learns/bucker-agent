@@ -26,12 +26,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
-from temporalio import activity
-
 from bucker.config import settings
 from bucker.core.blob import BlobStore
 from bucker.core.events import EventType
 from bucker.core.eventstore import EventStore, create_pool
+from bucker.temporal_compat import activity
 
 # --------------------------------------------------------------- runtime ----
 # One pool per worker process, created lazily. Activities are plain async

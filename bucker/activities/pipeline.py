@@ -14,8 +14,6 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
-from temporalio import activity
-
 from bucker.activities.demo import get_blobs, get_store
 from bucker.config import settings
 from bucker.contracts.models import Task, WorkerResult
@@ -24,6 +22,7 @@ from bucker.core.telemetry import record_model_call, record_tool_call, record_ve
 from bucker.retry import Action, AttemptState, decide
 from bucker.router.client import ModelRouter
 from bucker.sandbox.runtime import DockerSandbox
+from bucker.temporal_compat import activity
 from bucker.verifiers import get as get_verifier
 from bucker.verifiers import register_builtins
 from bucker.worker_agent import WorkFailed, execute_task

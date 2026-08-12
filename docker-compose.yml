@@ -3,14 +3,13 @@
 #   docker compose up --build -d
 #   open http://localhost:8123
 #
-# That runs Postgres + Temporal + worker + dashboard, all in containers.
+# That runs Postgres + Temporal + worker + dashboard, all in containers,
+# AND builds the bucker-sandbox isolation image (the `sandbox` service
+# below is a build carrier: `up --build` composes it as bucker-sandbox:latest
+# on the host, then the container exits — the worker launches sandboxes
+# directly via the host docker socket, never through this service).
 # The ONLY prerequisite on the host is Docker (Desktop). Everything else —
 # Python, uv, the Temporal CLI — is no longer needed locally.
-#
-# Sandbox note: the worker drives the sandbox via the HOST docker socket
-# (/var/run/docker.sock is proxied by Docker Desktop on Windows too), so
-# bucker-sandbox must exist as a host image first:
-#   docker build -t bucker-sandbox -f Dockerfile.sandbox .
 
 services:
   postgres:
@@ -102,6 +101,17 @@ services:
         condition: service_healthy
       temporal:
         condition: service_healthy
+
+  # Build carrier only: makes `docker compose up --build` build the
+  # isolation image the worker launches (bucker-sandbox:latest) with no
+  # separate `docker build` step. The container itself exits immediately.
+  sandbox:
+    image: bucker-sandbox:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    command: ["echo", "bucker-sandbox:latest built — the worker launches this image directly via the host docker socket"]
+    restart: "no"
 
 volumes:
   bucker_pgdata:

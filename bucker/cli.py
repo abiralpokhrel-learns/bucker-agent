@@ -17,9 +17,6 @@ import sys
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import asyncpg
-from temporalio.client import Client
-
 from bucker.config import settings
 from bucker.core.eventstore import EventStore, create_pool
 from bucker.core.snapshots import SnapshotStore
@@ -31,9 +28,47 @@ ROOT_ENV = Path(__file__).resolve().parent.parent / ".env"
 MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 
 
+def _full_stack_hint(command: str, http_path: str, error: str = "") -> str:
+    """The "you're not on the full stack" message for CLI commands that
+    hardwire Postgres/Temporal.
+
+    Lite mode is a first-class, documented path — a CLI command that
+    needs the full stack must say so plainly instead of leaking a raw
+    asyncpg/temporalio traceback (the reviewer-reported gap: `bucker
+    start` and `bucker graph run` crashed with ConnectionRefusedError
+    while the equivalent HTTP endpoints on the same server worked fine).
+    """
+    hint = (
+        f"[ERROR] `bucker {command}` needs the full stack (Temporal + "
+        "Postgres), but this process is in lite mode (SQLite / local "
+        "sandbox) or the stack is not reachable.\n"
+        "        Lite mode has its own HTTP API — use it instead:\n"
+        f"          curl -X POST http://localhost:8123{http_path}\n"
+        "        Full stack:  uv sync --extra full && "
+        "uv run python -m bucker.cli dev"
+    )
+    if error:
+        hint += f"\n        (underlying error: {error})"
+    return hint
+
+
+def _require_full_stack(command: str, http_path: str) -> bool:
+    """True when the caller may continue; prints the hint and returns
+    False when lite mode is detected (SQLite DSN or local sandbox)."""
+    if not (
+        settings.database_url.startswith("sqlite:")
+        or settings.sandbox_mode == "local"
+    ):
+        return True
+    print(_full_stack_hint(command, http_path), file=sys.stderr)
+    return False
+
+
 # ------------------------------------------------------------- commands ----
 async def cmd_migrate(args: argparse.Namespace) -> int:
     """Apply migrations as the OWNER role (not bucker_app, which cannot DDL)."""
+    import asyncpg  # full stack only (bucker[full])
+
     dsn = args.admin_url
     conn = await asyncpg.connect(dsn)
     try:
@@ -110,9 +145,20 @@ async def cmd_lite(args: argparse.Namespace) -> int:
 
 
 async def cmd_start(args: argparse.Namespace) -> int:
+    if not _require_full_stack("start", "/tasks?objective=..."):
+        return 2
+    from temporalio.client import Client  # full stack only (bucker[full])
+
     task_id = uuid4()
 
-    pool = await create_pool(settings.database_url)
+    try:
+        pool = await create_pool(settings.database_url)
+    except Exception as exc:  # noqa: BLE001 — the hint matters more than the trace
+        print(_full_stack_hint(
+            "start", "/tasks?objective=...",
+            error=f"{type(exc).__name__}: {str(exc)[:160]}",
+        ), file=sys.stderr)
+        return 2
     store = EventStore(pool)
     try:
         async with pool.acquire() as conn:
@@ -640,6 +686,9 @@ async def cmd_graph_run(args: argparse.Namespace) -> int:
     from bucker.contracts.graph import parse_spec, validate_graph
     from bucker.core.tasks import create_task
 
+    if not _require_full_stack("graph run", "/graphs"):
+        return 2
+
     try:
         spec_data = _json.loads(Path(args.spec_file).read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -661,7 +710,14 @@ async def cmd_graph_run(args: argparse.Namespace) -> int:
             print(f"  - {e}")
         return 2
 
-    pool = await create_pool(settings.database_url)
+    try:
+        pool = await create_pool(settings.database_url)
+    except Exception as exc:  # noqa: BLE001 — the hint matters more than the trace
+        print(_full_stack_hint(
+            "graph run", "/graphs",
+            error=f"{type(exc).__name__}: {str(exc)[:160]}",
+        ), file=sys.stderr)
+        return 2
     try:
         store = EventStore(pool)
         task_id, workflow_id, schedule_error = await create_task(

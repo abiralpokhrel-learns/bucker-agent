@@ -199,13 +199,11 @@ name = "bucker-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "asyncpg" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "pydantic" },
     { name = "python-dotenv" },
-    { name = "temporalio" },
     { name = "uvicorn" },
 ]
 
@@ -214,6 +212,10 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+]
+full = [
+    { name = "asyncpg" },
+    { name = "temporalio" },
 ]
 llm = [
     { name = "litellm" },
@@ -229,7 +231,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "asyncpg", specifier = ">=0.29" },
+    { name = "asyncpg", marker = "extra == 'full'", specifier = ">=0.29" },
     { name = "fastapi", specifier = ">=0.111" },
     { name = "httpx", specifier = ">=0.28.1,<1" },
     { name = "jsonschema", specifier = ">=4.22" },
@@ -240,10 +242,10 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
-    { name = "temporalio", specifier = ">=1.7" },
+    { name = "temporalio", marker = "extra == 'full'", specifier = ">=1.7" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["llm", "mcp", "dev"]
+provides-extras = ["full", "llm", "mcp", "dev"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "swebench", specifier = ">=4.1.0" }]

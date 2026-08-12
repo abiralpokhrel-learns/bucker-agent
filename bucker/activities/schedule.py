@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from temporalio import activity
-
 from bucker.activities.demo import get_store
 from bucker.core.tasks import register_task
+from bucker.temporal_compat import activity
 
 
 @activity.defn

@@ -250,6 +250,51 @@ def test_create_task_rejects_negative_budget(client):
     assert resp.status_code == 422
 
 
+def test_create_task_rejects_unknown_verifier(client):
+    """The /tasks/new dropdown implies a closed verifier set; enforce it.
+
+    An unknown verifier used to be silently persisted and "passed" — the
+    form was UI theater. Now it fails closed with 422 + the registry list.
+    """
+    resp = client.post(
+        "/tasks",
+        params={
+            "objective": "a sufficiently long objective",
+            "task_type": "demo",
+            "verifier": "not_a_real_verifier",
+        },
+    )
+    assert resp.status_code == 422
+    assert "registered verifiers" in resp.json()["detail"]
+
+
+def test_create_task_accepts_registered_verifier(client):
+    resp = client.post(
+        "/tasks",
+        params={
+            "objective": "a sufficiently long objective",
+            "task_type": "demo",
+            "verifier": "noop",
+        },
+    )
+    assert resp.status_code == 200
+
+
+def test_create_task_accepts_research_type(client):
+    """'research' is a real task_type (the planner documents it as one of
+    three) — it must create, not 422 (the reviewer's template-mismatch
+    bug: the browser form could not produce it, but the API must)."""
+    resp = client.post(
+        "/tasks",
+        params={
+            "objective": "a sufficiently long research objective",
+            "task_type": "research",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["task_type"] == "research"
+
+
 def test_get_task_404_for_unknown_id(client):
     resp = client.get(f"/tasks/{uuid4()}")
     assert resp.status_code == 404
