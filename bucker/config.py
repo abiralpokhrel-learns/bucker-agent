@@ -160,6 +160,15 @@ class Settings:
         default_factory=lambda: int(_env("BUCKER_MAX_RETRIES", "2"))
     )
 
+    # --- command verifier -------------------------------------------------
+    #: Default shell command the `command` verifier runs when the task
+    #: contract does not name one (constraints.command). Empty means no
+    #: default — such tasks then FAIL VERIFICATION rather than pass
+    #: silently, because a verifier that runs nothing must not pass.
+    shell_verify_command: str = field(
+        default_factory=lambda: _env("BUCKER_SHELL_VERIFY_COMMAND", "")
+    )
+
     # --- self-critique loop (loop engineering) ------------------------------
     #: Run the critic pass (cheap model review of the diff) before verifying.
     #: Bounded to ONE repair round per attempt; disable with 0.
@@ -181,6 +190,23 @@ class Settings:
     #: Generic webhook URL for task-completion notifications. Empty = off.
     notify_webhook_url: str = field(
         default_factory=lambda: _env("BUCKER_NOTIFY_WEBHOOK_URL", "")
+    )
+    #: Optional shared secret for the generic webhook channel. When set,
+    #: every webhook POST carries an HMAC-SHA256 signature header
+    #: (X-Bucker-Signature: t=<unix>,v1=<hex>) that receivers can verify
+    #: with bucker.core.notify.verify_webhook_signature. Empty = unsigned.
+    notify_webhook_secret: str = field(
+        default_factory=lambda: _env("BUCKER_NOTIFY_WEBHOOK_SECRET", "")
+    )
+    #: Slack incoming-webhook URL for task-completion notifications.
+    #: Empty = off. Never printed.
+    slack_webhook_url: str = field(
+        default_factory=lambda: _env("BUCKER_SLACK_WEBHOOK_URL", "")
+    )
+    #: Discord incoming-webhook URL for task-completion notifications.
+    #: Empty = off. Never printed.
+    discord_webhook_url: str = field(
+        default_factory=lambda: _env("BUCKER_DISCORD_WEBHOOK_URL", "")
     )
     #: Telegram delivery (requires BOTH token and chat id). Empty = off.
     telegram_bot_token: str = field(

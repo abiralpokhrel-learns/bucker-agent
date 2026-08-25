@@ -9,20 +9,13 @@ from bucker.temporal_compat import activity
 
 @activity.defn
 async def notify_task_result(kind: str, result: dict[str, Any]) -> dict[str, Any]:
-    """Send a completion notification (webhook or Telegram).
+    """Send a completion notification (webhook/Telegram/Slack/Discord).
 
     No-op when nothing is configured; delivery failures are swallowed —
     a notification must never fail the task it announces.
     """
-    from bucker.core.notify import (
-        build_graph_message,
-        build_task_message,
-        deliver,
-        is_configured,
-    )
+    from bucker.core.notify import deliver_event, is_configured
 
     if not is_configured():
         return {"delivered": False, "reason": "not configured"}
-    message = build_graph_message(result) if kind == "graph" \
-        else build_task_message(result)
-    return await deliver(message)
+    return await deliver_event(kind, result)

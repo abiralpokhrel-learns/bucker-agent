@@ -54,8 +54,10 @@ Read this before trusting bucker with real work:
   worker-produced code directly on the host (scratch dir, no container).
   Use it only for code you trust. The Docker sandbox in the full stack
   (`--network none`, unprivileged) is the real isolation boundary.
-- **Schedules need the full stack.** Recurring tasks and Temporal-backed
-  durability are full-stack (Docker + Temporal + Postgres) features only.
+- **Lite schedules fire only while the server runs.** Lite-mode schedules
+  live in SQLite and are fired by a loop inside the dashboard process —
+  if it is down at a fire time, that run is skipped (never replayed,
+  never duplicated). Temporal-backed schedules catch up after downtime.
 - **Experimental pieces.** Graph orchestration, memory/skills, adaptive
   mode, and the MCP server are first implementations — treat their
   behavior as provisional until they accumulate live mileage.
@@ -170,7 +172,7 @@ bare laptop:
 | Workflow engine | Temporal server | in-process asyncio runner |
 | Sandbox | network-isolated Docker container | host subprocesses in a scratch dir |
 | Install | `uv` + Docker | plain `pip install -e .` |
-| Schedules | Temporal scheduler | not available (501 with explanation) |
+| Schedules | Temporal scheduler | in-process scheduler over the same SQLite store (fires while the server runs; missed runs are skipped, never duplicated) |
 
 Lite mode uses the **same** planner, worker, verifier, event store,
 budget guard, retry policy, memory, dashboard, and API — only the
@@ -252,7 +254,12 @@ verifier, and event store are identical; only the transport layers change.
 - 🕸️ **Task graphs** — DAGs with parallel waves and dependency joins
 - 🧠 **Memory & skills** — durable facts + procedures, self-pruning, user-owned
 - 🤝 **Human-in-the-loop** — approve/reject with notes; auditable separation of human vs machine verdicts
-- 📣 **Delivery** — webhook / Telegram when a task finishes
+- 📣 **Delivery** — webhook (optionally HMAC-signed) / Telegram / Slack / Discord when a task finishes
+- 🧹 **Sweeper** — `bucker sweep` finds stale and near-budget tasks, halts on request, notifies on schedule
+- 💸 **Forecast** — `bucker forecast`: what YOUR task types actually cost, from recorded telemetry
+- 🔁 **Batch replay** — `bucker replay --recent 25`: fleet-level reproducibility with a match rate
+- 🐍 **Python SDK** — `BuckerClient` / `AsyncBuckerClient`: typed errors, `wait_for_task`, event paging (`bucker/client.py`)
+- 🔎 **Verifiers** — pytest runner, citation checker, and a generic `command` verifier (make/npm/go/cargo test) via `constraints.command` or `BUCKER_SHELL_VERIFY_COMMAND`
 - 🎛️ **Dashboard** — live event stream, replay, usage panel, system health
 - 🩺 **Self-healing** — `bucker reconcile` re-schedules tasks that never started
 - 🗄️ **Backups** — one-command Postgres + blobstore dump with a restore drill
@@ -627,8 +634,23 @@ Scheduled and graph runs announce their outcome to a webhook or Telegram
 — opt-in, no-op when unconfigured:
 
 ```
-TELEGRAM_BOT_TOKEN=...   TELEGRAM_CHAT_ID=...   # Telegram delivery
-BUCKER_NOTIFY_WEBHOOK_URL=https://...           # generic webhook
+TELEGRAM_BOT_TOKEN=...   TELEGRAM_CHAT_ID=...    # Telegram delivery
+BUCKER_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...   # Slack
+BUCKER_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...  # Discord
+BUCKER_NOTIFY_WEBHOOK_URL=https://...            # generic webhook
+BUCKER_NOTIFY_WEBHOOK_SECRET=whsec_...           # optional HMAC signing
+```
+
+One channel per event (precedence: Telegram > Slack > Discord >
+webhook); all opt-in, no-op when unconfigured. The generic webhook body
+carries structured fields (`event`, `status`, `task_id`, `cost_usd`, …)
+next to the prose `text`. With a secret configured, every webhook POST
+is signed — receivers verify it with:
+
+```python
+from bucker.core.notify import verify_webhook_signature
+
+assert verify_webhook_signature(secret, request.headers["X-Bucker-Signature"], raw_body)
 ```
 
 ## Tracing (LLM ops)
@@ -704,9 +726,43 @@ bucker schedules delete nightly-bench
 ```
 
 Each run mints a fresh task (new audit trail, new idempotency keys) and
-runs the full plan → work → verify loop as a child workflow. Schedules
-live in Temporal, so they survive restarts. Manage them from the
-dashboard at `/schedules-page`.
+runs the full plan → work → verify loop. Schedules live in Temporal on
+the full stack, and in the lite SQLite store in lite mode — same CLI,
+same API (`POST /schedules`, `POST /schedules/{id}/pause`), same cron
+semantics (5 fields, `TZ=Area/City` prefix honored; evaluated per its
+timezone). Manage them from the dashboard at `/schedules-page`.
+
+## Watch a task from the terminal
+
+```bash
+bucker start --code --objective "..."     # note the task id
+bucker watch <task_id>                    # live-tail events until a verdict
+bucker wait  <task_id> --quiet            # scripts: exit 0 pass / 1 fail / 2 escalated
+```
+
+`watch` prints each event as it lands and exits with the verdict's class;
+`wait` is the quiet variant for shell scripts and CI.
+
+## Python SDK
+
+```python
+from bucker.client import BuckerClient
+
+with BuckerClient() as bucker:                      # http://localhost:8123, dev token
+    task = bucker.create_task("Add a subtract function to calc.py",
+                              budget_usd=0.25)
+    result = bucker.wait_for_task(task["task_id"], timeout_s=900)
+    print(result["status"], result["cost_usd"])
+
+    for event in bucker.iter_events(task["task_id"]):
+        print(event["event_type"])
+```
+
+`AsyncBuckerClient` mirrors the whole surface for asyncio code. Errors
+are typed (`NotFoundError`, `ConflictError`, `ValidationError`, …) and
+`wait_for_task` raises `WaitTimeoutError` instead of hanging forever.
+Works identically against the full stack and lite mode — both serve the
+same API.
 
 ## Task templates
 
@@ -719,13 +775,20 @@ on the form fills everything in.
 
 ```bash
 bucker start --code --objective "..." --budget-usd 0.5 --wait
-bucker tasks                # recent tasks: status, cost, tokens
-bucker usage                # tokens/cost by model and stage
+bucker tasks                # recent tasks: status, cost, tokens (--format json|csv)
+bucker usage                # tokens/cost by model and stage (--format json)
+bucker forecast             # cost/token distributions per task type, from YOUR data
 bucker show <id>            # state rebuilt from events
 bucker events <id>          # the full audit trail
+bucker watch <id>           # live-tail events until a verdict
+bucker wait <id> --quiet    # script-friendly block (exit 0/1/2)
 bucker replay <id>          # deterministic re-run from recordings
+bucker replay --recent 25   # batch: match rate across recent completed tasks
+bucker sweep                # stale + near-budget triage (exit 1 = actionable)
+bucker sweep --halt         # ...and record TaskFailed for the stale ones
 bucker templates            # task presets
-bucker schedules list       # recurring tasks
+bucker schedules list       # recurring tasks (lite + full stack)
+bucker version              # version + configured mode
 bucker doctor               # diagnose a broken setup
 ```
 

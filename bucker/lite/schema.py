@@ -118,4 +118,36 @@ CREATE INDEX IF NOT EXISTS idx_gateway_usage_day
     ON gateway_usage (provider, model, created_at);
 CREATE INDEX IF NOT EXISTS idx_gateway_usage_request
     ON gateway_usage (request_id);
+
+-- Lite-mode schedules: the SQLite analog of Temporal schedules. The
+-- durable source of truth in lite mode - every run mints a fresh task
+-- through the SAME create_task path the API uses, so scheduled runs get
+-- the full pipeline and audit trail. next_run_at is written and compared
+-- as ISO-8601 TEXT produced by ONE Python call site (isoformat on UTC
+-- datetimes) and is never compared against SQLite's own datetime('now')
+-- rendering, whose space-separator format sorts wrongly against
+-- 'T'-separator ISO strings.
+-- NOTE: no semicolon characters allowed anywhere in these comments -
+-- init_schema() splits this file on the statement terminator and a stray
+-- one inside a comment would shred every statement below it.
+CREATE TABLE IF NOT EXISTS schedules (
+    id               TEXT PRIMARY KEY,
+    cron             TEXT        NOT NULL,
+    template         TEXT        NOT NULL,
+    objective        TEXT        NOT NULL DEFAULT '',
+    task_type        TEXT        NOT NULL DEFAULT 'code_change',
+    budget_usd       REAL,
+    deadline_minutes INTEGER,
+    max_retries      INTEGER     NOT NULL DEFAULT 2,
+    adaptive         INTEGER     NOT NULL DEFAULT 0,
+    paused           INTEGER     NOT NULL DEFAULT 0,
+    next_run_at      TEXT,
+    last_run_at      TEXT,
+    last_task_id     TEXT,
+    run_count        INTEGER     NOT NULL DEFAULT 0,
+    created_at       TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at       TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules (paused, next_run_at);
 """

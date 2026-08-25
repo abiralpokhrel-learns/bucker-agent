@@ -95,6 +95,9 @@ _blobs: BlobStore | None = None
 #: data routes answer 503 instead of dying mid-request.
 _degraded: bool = False
 
+#: Lite-mode schedule loop; started in lifespan only when storage is sqlite.
+_lite_scheduler = None
+
 
 def _get_pool():
     if _pool is None:
@@ -249,11 +252,23 @@ async def _startup():
         )
     else:
         print("database pool ready", file=sys.stderr)
+        if _in_lite_mode():
+            # The lite scheduler replaces Temporal's schedule loop: one
+            # asyncio task in THIS process turns due schedule rows into
+            # real tasks through the same create_task path as the API.
+            global _lite_scheduler
+            from bucker.lite.scheduler import LiteScheduler
+
+            _lite_scheduler = LiteScheduler(_pool)
+            await _lite_scheduler.start()
 
 
 @app.on_event("shutdown")
 async def _shutdown():
-    global _pool
+    global _pool, _lite_scheduler
+    if _lite_scheduler is not None:
+        await _lite_scheduler.stop()
+        _lite_scheduler = None
     if _pool is not None:
         await _pool.close()
         _pool = None
@@ -383,15 +398,23 @@ LEFT JOIN telemetry tm ON tm.task_id = t.id
 @app.get("/tasks")
 async def list_tasks(
     limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0,
+                        description="Skip this many tasks (pagination)"),
     status: str | None = Query(None, description="Filter by task status"),
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """List tasks with per-task cost and event counts, newest first."""
     _check_auth(creds)
 
-    sql = _TASK_LIST_SQL + ("WHERE t.status = $1 " if status else "")
-    sql += "GROUP BY t.id ORDER BY t.created_at DESC LIMIT " + ("$2" if status else "$1")
-    args: list = [status] + [limit] if status else [limit]
+    where = "WHERE t.status = $1 " if status else ""
+    sql = (
+        _TASK_LIST_SQL + where
+        + "GROUP BY t.id ORDER BY t.created_at DESC LIMIT "
+        + ("$2 OFFSET $3" if status else "$1 OFFSET $2")
+    )
+    args: list = (
+        [status, limit, offset] if status else [limit, offset]
+    )
 
     async with _get_pool().acquire() as conn:
         rows = await conn.fetch(sql, *args)
@@ -403,6 +426,8 @@ async def list_tasks(
 
     return {
         "total": int(total or 0),
+        "limit": limit,
+        "offset": offset,
         "tasks": [
             {
                 "task_id": str(r["id"]),
@@ -827,11 +852,24 @@ async def create_schedule_endpoint(
     """Create (or update) a recurring verified task on a cron schedule."""
     _check_auth(creds, write=True)
     if _in_lite_mode():
-        raise HTTPException(
-            status_code=501,
-            detail="schedules are stored in Temporal and are not available "
-                   "in lite mode (run the full stack for scheduled tasks)",
-        )
+        from bucker.lite.scheduler import create_schedule as lite_create
+
+        try:
+            return await lite_create(_get_pool(), {
+                "schedule_id": schedule_id,
+                "cron": cron,
+                "template": template,
+                "objective": objective,
+                "budget_usd": budget_usd,
+                "deadline_minutes": deadline_minutes,
+            })
+        except ValueError as exc:
+            # bad cron expression or never-firing schedule
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 — unknown template surfaces as 400
+            detail = str(exc)
+            status_code = 400 if "unknown template" in detail.lower() else 409
+            raise HTTPException(status_code=status_code, detail=detail) from exc
     from bucker.core.schedules import ScheduleSpec, create_schedule
     from bucker.templates import UnknownTemplateError
 
@@ -857,14 +895,13 @@ async def create_schedule_endpoint(
 async def list_schedules_endpoint(
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
-    """All schedules (from Temporal — the durable source of truth)."""
+    """All schedules (Temporal on the full stack, SQLite in lite mode)."""
     _check_auth(creds)
     if _in_lite_mode():
-        raise HTTPException(
-            status_code=501,
-            detail="schedules are stored in Temporal and are not available "
-                   "in lite mode (run the full stack for scheduled tasks)",
-        )
+        from bucker.lite.scheduler import list_schedules as lite_list
+
+        schedules = await lite_list(_get_pool())
+        return {"schedules": schedules, "backend": "lite"}
     from bucker.core.schedules import list_schedules
 
     try:
@@ -885,11 +922,12 @@ async def delete_schedule_endpoint(
     """Delete a schedule. 404 when it did not exist."""
     _check_auth(creds, write=True)
     if _in_lite_mode():
-        raise HTTPException(
-            status_code=501,
-            detail="schedules are stored in Temporal and are not available "
-                   "in lite mode (run the full stack for scheduled tasks)",
-        )
+        from bucker.lite.scheduler import delete_schedule as lite_delete
+
+        deleted = await lite_delete(_get_pool(), schedule_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        return {"schedule_id": schedule_id, "deleted": True}
     from bucker.core.schedules import delete_schedule
 
     try:
@@ -907,20 +945,58 @@ async def delete_schedule_endpoint(
 # -------------------------------------------------------------- schedules page --
 
 
+@app.post("/schedules/{schedule_id}/pause")
+async def pause_schedule_endpoint(
+    schedule_id: str,
+    resume: bool = Query(False, description="true to resume instead"),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Pause (or resume) a schedule. Idempotent; works in both modes."""
+    _check_auth(creds, write=True)
+    if _in_lite_mode():
+        from bucker.lite.scheduler import set_paused as lite_pause
+
+        updated = await lite_pause(_get_pool(), schedule_id,
+                                   paused=not resume)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        return {
+            "schedule_id": schedule_id,
+            "paused": bool(updated["paused"]),
+            "next_run_at": updated["next_run_at"],
+        }
+    from bucker.core.schedules import pause_schedule
+
+    try:
+        return await pause_schedule(schedule_id, paused=not resume)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"Temporal unreachable: {type(exc).__name__}: {str(exc)[:120]}",
+        ) from exc
+
+
 @app.get("/schedules-page", response_class=HTMLResponse)
 async def schedules_page(
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> str:
     """HTML page for managing schedules (rendered by the dashboard)."""
     _check_auth(creds)
-    from bucker.core.schedules import list_schedules
     from bucker.templates import list_templates
 
-    try:
-        schedules = await list_schedules()
+    if _in_lite_mode():
+        from bucker.lite.scheduler import list_schedules as lite_list
+
+        schedules = await lite_list(_get_pool())
         temporal_ok = True
-    except Exception:  # noqa: BLE001
-        schedules, temporal_ok = [], False
+    else:
+        from bucker.core.schedules import list_schedules
+
+        try:
+            schedules = await list_schedules()
+            temporal_ok = True
+        except Exception:  # noqa: BLE001 — degrade to the alert banner, not a 500
+            schedules, temporal_ok = [], False
 
     from bucker.api.dashboard import render_schedules_page
 

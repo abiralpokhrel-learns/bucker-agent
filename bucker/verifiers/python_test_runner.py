@@ -242,6 +242,10 @@ def register_builtins() -> None:
     # module never drags in the citation checker (and vice versa).
     from bucker.verifiers.citation_checker import CitationVerifier
     register(CitationVerifier())
+    # The `command` verifier: arbitrary shell command as the gate (make/npm/
+    # go/cargo test...). Same lazy-import discipline.
+    from bucker.verifiers.command_runner import register_command_verifier
+    register_command_verifier()
     _BUILTINS_REGISTERED = True
 
 

@@ -103,12 +103,14 @@ def test_registering_same_object_twice_is_fine():
 
 def test_builtins_register():
     register_builtins()
-    assert set(available()) == {"python_test_runner", "noop", "citation_checker"}
+    assert set(available()) == {
+        "python_test_runner", "noop", "citation_checker", "command",
+    }
 
 
 def test_routing_by_task_type():
     register_builtins()
-    assert for_task_type("code_change") == ("python_test_runner",)
+    assert for_task_type("code_change") == ("command", "python_test_runner")
     assert for_task_type("demo") == ("noop",)
     assert for_task_type("research") == ("citation_checker",)
 

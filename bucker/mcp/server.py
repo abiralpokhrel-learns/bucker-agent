@@ -223,6 +223,108 @@ def build_server():
             )
         return await _with_client(_run)
 
+    # ------------------------------------------------- schedules + sweep ----
+    # Lite mode stores schedules in SQLite (bucker.lite.scheduler); the full
+    # stack stores them in Temporal (bucker.core.schedules). Same surface,
+    # dispatched on the DSN — the pool type is the mode.
+
+    def _in_lite_mode() -> bool:
+        return settings.database_url.startswith("sqlite:")
+
+    @mcp.tool()
+    async def list_schedules_tool() -> str:
+        """List recurring tasks (cron schedules) with next fire times."""
+        async def _run(pool, store):
+            if _in_lite_mode():
+                from bucker.lite.scheduler import list_schedules as lite_list
+
+                rows = await lite_list(pool)
+            else:
+                from bucker.core.schedules import list_schedules
+
+                rows = await list_schedules()
+            if not rows:
+                return "no schedules yet"
+            lines = []
+            for s in rows:
+                paused = "paused" if s.get("paused") else "active"
+                cron = s.get("cron", "?")
+                nxt = s.get("next_run_at") or "-"
+                lines.append(f"{s['schedule_id']:<24} {paused:<8} {cron:<14} "
+                             f"next {nxt}")
+            return "\n".join(lines)
+        return await _with_client(_run)
+
+    @mcp.tool()
+    async def create_schedule_tool(
+        schedule_id: str,
+        cron: str,
+        template: str = "code-fix",
+        objective: str = "",
+    ) -> str:
+        """Create/update a recurring verified task on a 5-field cron.
+
+        Every fire mints a FRESH task through the same verified pipeline.
+        Re-creating the same schedule_id updates it. In lite mode the
+        schedule fires while the server runs; on the full stack Temporal
+        catches up missed runs.
+        """
+        async def _run(pool, store):
+            spec = {
+                "schedule_id": schedule_id, "cron": cron,
+                "template": template, "objective": objective,
+            }
+            try:
+                if _in_lite_mode():
+                    from bucker.lite.scheduler import create_schedule as fn
+
+                    result = await fn(pool, spec)
+                else:
+                    from bucker.core.schedules import ScheduleSpec
+                    from bucker.core.schedules import create_schedule as fn
+
+                    result = await fn(ScheduleSpec(**spec))
+            except ValueError as exc:
+                return f"rejected: {exc}"
+            except Exception as exc:  # noqa: BLE001 — surfaced to the agent, not raised
+                return f"could not create schedule: {type(exc).__name__}: {str(exc)[:160]}"
+            return (
+                f"schedule {result['schedule_id']} created — {result['cron']} "
+                f"(first run {result.get('next_run_at', 'per Temporal')})"
+            )
+        return await _with_client(_run)
+
+    @mcp.tool()
+    async def delete_schedule_tool(schedule_id: str) -> str:
+        """Delete a recurring-task schedule by id."""
+        async def _run(pool, store):
+            if _in_lite_mode():
+                from bucker.lite.scheduler import delete_schedule as fn
+
+                deleted = await fn(pool, schedule_id)
+            else:
+                from bucker.core.schedules import delete_schedule as fn
+
+                deleted = await fn(schedule_id)
+            return (f"schedule {schedule_id} deleted" if deleted
+                    else f"no schedule named {schedule_id!r}")
+        return await _with_client(_run)
+
+    @mcp.tool()
+    async def sweep_report_tool(stale_minutes: int = 30) -> str:
+        """Operational triage: which tasks are stale or near their budget.
+
+        Report-only — halting stays a human decision.
+        """
+        async def _run(pool, store):
+            from bucker.core.sweep import format_sweep_report, run_sweep
+
+            report = await run_sweep(
+                pool, store, stale_minutes=max(1, stale_minutes),
+            )
+            return format_sweep_report(report)
+        return await _with_client(_run)
+
     return mcp
 
 

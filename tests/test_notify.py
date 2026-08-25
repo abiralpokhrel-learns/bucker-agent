@@ -128,6 +128,221 @@ def test_payload_for_webhook_and_telegram(monkeypatch):
         object.__setattr__(settings, "telegram_chat_id", original[2])
 
 
+# --------------------------------------------- Slack / Discord channels --
+
+
+def _set_channels(**values):
+    """Patch the five delivery settings on the frozen Settings object.
+
+    Returns a restore callable — call it in a finally block (the pattern
+    the rest of this file uses; monkeypatch.setattr can't write to a
+    frozen dataclass).
+    """
+    import bucker.config as cfg
+
+    fields = ("notify_webhook_url", "telegram_bot_token", "telegram_chat_id",
+              "slack_webhook_url", "discord_webhook_url")
+    originals = {f: getattr(cfg.settings, f) for f in fields}
+    for f in fields:
+        object.__setattr__(cfg.settings, f, values.get(f, ""))
+
+    def _restore():
+        for f, v in originals.items():
+            object.__setattr__(cfg.settings, f, v)
+    return _restore
+
+
+def test_channel_precedence_and_bodies():
+    """Telegram > Slack > Discord > generic webhook, one channel per event."""
+    from bucker.config import settings
+    from bucker.core.notify import _payload_for
+
+    restore = _set_channels(
+        telegram_bot_token="123:ABC", telegram_chat_id="42",
+        slack_webhook_url="https://hooks.slack.com/services/T00/B00/XXX",
+        discord_webhook_url="https://discord.com/api/webhooks/1/abc",
+        notify_webhook_url="https://example.com/hook",
+    )
+    try:
+        p = _payload_for("hello")
+        assert p["kind"] == "telegram"
+
+        object.__setattr__(settings, "telegram_bot_token", "")
+        object.__setattr__(settings, "telegram_chat_id", "")
+        p = _payload_for("hello")
+        assert p["kind"] == "slack"
+        assert p["url"].startswith("https://hooks.slack.com/")
+        assert p["body"] == {"text": "hello"}
+    finally:
+        restore()
+
+    restore_discord = _set_channels(
+        discord_webhook_url="https://discord.com/api/webhooks/1/abc",
+    )
+    try:
+        p = _payload_for("hello")
+        assert p["kind"] == "discord"
+        assert p["body"] == {"content": "hello"}
+    finally:
+        restore_discord()
+
+    restore_hook = _set_channels(notify_webhook_url="https://example.com/hook")
+    try:
+        p = _payload_for("hello")
+        assert p["kind"] == "webhook"
+    finally:
+        restore_hook()
+
+
+def test_discord_message_truncated_to_limit():
+    """Discord rejects bodies over 2000 chars with a 400; truncate instead."""
+    from bucker.core.notify import _DISCORD_MAX_CHARS, _payload_for
+
+    restore = _set_channels(
+        discord_webhook_url="https://discord.com/api/webhooks/1/abc",
+    )
+    try:
+        body = _payload_for("x" * 5000)["body"]
+        assert len(body["content"]) <= 2000
+        assert len(body["content"]) == _DISCORD_MAX_CHARS
+    finally:
+        restore()
+
+
+def test_configured_channels_order_and_empty():
+    from bucker.core.notify import configured_channels
+
+    restore_empty = _set_channels()
+    try:
+        assert configured_channels() == []
+    finally:
+        restore_empty()
+
+    restore_two = _set_channels(
+        slack_webhook_url="https://hooks.slack.com/s",
+        notify_webhook_url="https://e.com/h",
+    )
+    try:
+        assert configured_channels() == ["slack", "webhook"]
+    finally:
+        restore_two()
+
+
+def test_is_configured_with_slack_only():
+    from bucker.core.notify import is_configured
+
+    restore = _set_channels(slack_webhook_url="https://hooks.slack.com/s")
+    try:
+        assert is_configured() is True
+    finally:
+        restore()
+
+
+# --------------------------------------------- HMAC webhook signing ----
+
+
+SECRET = "whsec_test_123"
+
+
+def test_sign_and_verify_round_trip():
+    from bucker.core.notify import sign_payload, verify_webhook_signature
+
+    body = b'{"text": "task completed"}'
+    header = sign_payload(SECRET, body, timestamp=1_700_000_000)
+    assert header.startswith("t=1700000000,v1=")
+    assert verify_webhook_signature(
+        SECRET, header, body,
+        now=1_700_000_000 + 60,  # within tolerance
+    )
+
+
+def test_verify_rejects_tampered_body():
+    from bucker.core.notify import sign_payload, verify_webhook_signature
+
+    header = sign_payload(SECRET, b'{"text": "legit"}', timestamp=100)
+    assert not verify_webhook_signature(
+        SECRET, header, b'{"text": "forged"}', now=100
+    )
+
+
+def test_verify_rejects_stale_timestamps():
+    """Replay protection: a captured signature older than the tolerance
+    window must fail even though the MAC itself is valid."""
+    from bucker.core.notify import sign_payload, verify_webhook_signature
+
+    body = b"x"
+    header = sign_payload(SECRET, body, timestamp=1_000_000)
+    assert not verify_webhook_signature(
+        SECRET, header, body, tolerance_s=300, now=1_000_000 + 301,
+    )
+    assert verify_webhook_signature(
+        SECRET, header, body, tolerance_s=300, now=1_000_000 + 299,
+    )
+
+
+def test_verify_rejects_malformed_headers():
+    from bucker.core.notify import verify_webhook_signature
+
+    for bad in ("", "v1=abc", "t=abc,v1=abc", "t=1"):
+        assert not verify_webhook_signature(SECRET, bad, b"body", now=1)
+
+
+def test_verify_accepts_any_rotated_key_match():
+    """Multiple v1 entries model key rotation: one match is enough."""
+    from bucker.core.notify import sign_payload, verify_webhook_signature
+
+    body = b"payload"
+    old_sig = sign_payload("old-secret", body, timestamp=50).split("v1=")[1]
+    new_header = sign_payload("new-secret", body, timestamp=50) \
+        .replace("v1=", f"v1={old_sig},v1=", 1)
+    # Header now lists BOTH the old and new signatures.
+    assert verify_webhook_signature("new-secret", new_header, body, now=50)
+
+
+def test_verify_needs_secret_and_header():
+    from bucker.core.notify import verify_webhook_signature
+
+    assert not verify_webhook_signature("", "t=1,v1=abc", b"b")
+    assert not verify_webhook_signature(SECRET, "", b"b")
+
+
+def test_build_event_data_fields():
+    """Structured webhook payload: machine-readable fields next to prose."""
+    from bucker.core.notify import build_event_data
+
+    data = build_event_data("task", {
+        "status": "completed", "attempts": 2, "cost_usd": 0.03,
+        "verdict": {"passed": True, "verifier": "python_test_runner"},
+    })
+    assert data["event"] == "task"
+    assert data["status"] == "completed"
+    assert data["verifier_passed"] is True
+    assert data["cost_usd"] == pytest.approx(0.03)
+
+
+def test_structured_data_flattens_into_generic_webhook_only():
+    """Chat platforms get prose only; unknown keys would be rejected or
+    misrendered there. The generic webhook gets text + structured fields."""
+    from bucker.core.notify import _payload_for
+
+    restore = _set_channels(notify_webhook_url="https://e.com/hook")
+    try:
+        body = _payload_for("done", {"event": "task",
+                                     "cost_usd": 0.5})["body"]
+        assert body["text"] == "done"
+        assert body["event"] == "task"
+    finally:
+        restore()
+
+    restore_slack = _set_channels(
+        slack_webhook_url="https://hooks.slack.com/s")
+    try:
+        body = _payload_for("done", {"event": "task"})["body"]
+        assert body == {"text": "done"}
+    finally:
+        restore_slack()
+
+
 # -------------------------------------------------- SSRF guard (review) --
 
 

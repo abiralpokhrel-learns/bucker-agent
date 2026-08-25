@@ -426,10 +426,11 @@ async def test_lite_cancel_finds_runner_task(lite_db, monkeypatch):
     await pool.close()
 
 
-def test_schedules_are_501_in_lite_mode(tmp_path):
-    """Lite mode answers a clear 501 for schedules, not a Temporal error."""
+def test_schedules_served_by_lite_backend(tmp_path):
+    """Schedules work in lite mode now: GET /schedules answers from the
+    SQLite store (the old 501 seam is gone; full CRUD lives in
+    tests/test_lite_scheduler.py)."""
     import asyncio
-    import sys
 
     from fastapi.testclient import TestClient
 
@@ -439,6 +440,7 @@ def test_schedules_are_501_in_lite_mode(tmp_path):
     os.environ["BUCKER_SANDBOX_MODE"] = "local"
 
     async def _boot():
+        import sys
 
         import bucker.api  # noqa: F401
 
@@ -448,10 +450,15 @@ def test_schedules_are_501_in_lite_mode(tmp_path):
         pool = await create_pool(os.environ["BUCKER_DATABASE_URL"])
         app_mod._pool = pool
         app_mod._store = EventStore(pool)
-        return app_mod.app
+        return app_mod.app, pool
 
-    app = asyncio.run(_boot())
-    with TestClient(app, raise_server_exceptions=False) as c:
-        resp = c.get("/schedules")
-        assert resp.status_code == 501
-        assert "lite mode" in resp.json()["detail"]
+    app, pool = asyncio.run(_boot())
+    try:
+        with TestClient(app, raise_server_exceptions=False) as c:
+            resp = c.get("/schedules")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["backend"] == "lite"
+            assert body["schedules"] == []
+    finally:
+        asyncio.run(pool.close())
