@@ -240,7 +240,6 @@ def test_gateway_unknown_model_400(monkeypatch):
 
 
 def test_models_endpoint_lists_routable_models(monkeypatch):
-    from bucker.config import settings
 
     c, _, _ = _client(monkeypatch)
     resp = c.get("/v1/models", headers=_auth())
@@ -248,7 +247,7 @@ def test_models_endpoint_lists_routable_models(monkeypatch):
     body = resp.json()
     assert body["object"] == "list"
     ids = [m["id"] for m in body["data"]]
-    assert settings.model in ids
+    assert "deepseek/deepseek-v4-flash" in ids
     assert "b/model-2" in ids
 
 

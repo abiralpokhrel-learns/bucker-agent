@@ -239,15 +239,21 @@ async def run_paired_benchmark(
 
         # ---- evaluate both via official harness ---------------------------
         predictions_path = _write_predictions(run)
-        try:
-            report = run_evaluation(
-                predictions_path,
-                instances_path=settings.blob_root.parent / "swebench_lite.json",
-            )
-            run.evaluation_report = report
-        except Exception as exc:
-            print(f"\n  evaluation error: {exc}")
-            run.evaluation_report = [{"error": str(exc)}]
+        if not predictions_path:
+            print("\n  no diffs produced — skipping evaluation")
+            run.evaluation_report = [{
+                "error": "no predictions: neither architecture produced a diff",
+            }]
+        else:
+            try:
+                report = run_evaluation(
+                    predictions_path,
+                    instances_path=settings.blob_root.parent / "swebench_lite.json",
+                )
+                run.evaluation_report = report
+            except Exception as exc:
+                print(f"\n  evaluation error: {exc}")
+                run.evaluation_report = [{"error": str(exc)}]
 
     finally:
         await pool.close()
@@ -390,8 +396,12 @@ async def _run_baseline(
         )
 
 
-def _write_predictions(run: ExperimentRun) -> Path:
-    """Write predictions in the SWE-bench format for both architectures."""
+def _write_predictions(run: ExperimentRun) -> Path | None:
+    """Write predictions in the SWE-bench format for both architectures.
+
+    Returns None when neither architecture produced a diff (the harness
+    crashes on an empty predictions file, so it must not be invoked).
+    """
     predictions = []
     for r in run.bucker_results:
         if r.diff:
@@ -403,6 +413,9 @@ def _write_predictions(run: ExperimentRun) -> Path:
             predictions.append(prediction_from_diff(
                 r.diff, r.instance_id, f"baseline-{run.model}"
             ))
+
+    if not predictions:
+        return None
 
     path = Path(settings.blob_root).parent / "predictions" / f"{run.run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)

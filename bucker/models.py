@@ -71,25 +71,17 @@ CATALOG: tuple[CatalogModel, ...] = (
        context=16_384, model_id="deepseek-r1:7b",
        notes="reasoning-style local model"),
     # ------------------------------------------------------------- free (OpenRouter)
+    _m(provider="openrouter", tier="free", name="Nemotron 3 Ultra 550B (free)",
+       context=131_072, model_id="nvidia/nemotron-3-ultra-550b-a55b:free",
+       notes="largest free hosted coder; 0.0 per 1M tokens",
+       daily_limit=50),
     _m(provider="openrouter", tier="free", name="Nemotron 3 Super 120B (free)",
        context=131_072, model_id="nvidia/nemotron-3-super-120b-a12b:free",
-       notes="current best free hosted coder; 0.0 per 1M tokens",
+       notes="strong free hosted coder; 0.0 per 1M tokens",
        daily_limit=50),
-    _m(provider="openrouter", tier="free", name="DeepSeek V3 (free)",
-       context=131_072, model_id="deepseek/deepseek-v3:free",
-       notes="free tier of DeepSeek V3 when available",
-       daily_limit=50),
-    _m(provider="openrouter", tier="free", name="Llama 3.3 70B (free)",
-       context=131_072, model_id="meta-llama/llama-3.3-70b-instruct:free",
-       notes="free tier of the 70B instruct model",
-       daily_limit=50),
-    _m(provider="openrouter", tier="free", name="Qwen 2.5 72B (free)",
-       context=131_072, model_id="qwen/qwen-2.5-72b-instruct:free",
-       notes="free tier of the 72B instruct model",
-       daily_limit=50),
-    _m(provider="openrouter", tier="free", name="Gemini 2.5 Flash (free)",
-       context=1_000_000, model_id="google/gemini-2.5-flash:free",
-       notes="free tier of Gemini 2.5 Flash; subject to availability",
+    _m(provider="openrouter", tier="free", name="GLM 5.2 (free)",
+       context=131_072, model_id="z-ai/glm-5.2:free",
+       notes="free coding-capable GLM tier",
        daily_limit=50),
     # ------------------------------------------------------------- paid (DeepSeek)
     _m(provider="deepseek", tier="paid", name="DeepSeek V4 Flash",
@@ -218,7 +210,6 @@ def suggest_chain(
     #    models are intentionally never suggested — free tier first, always.
     if openrouter_key_ok:
         chain.append("openrouter/nvidia/nemotron-3-super-120b-a12b:free")
-
     # 3. DeepSeek V4 Flash (paid, needs its own key).
     if deepseek_key_ok:
         chain.append("deepseek/deepseek-v4-flash")

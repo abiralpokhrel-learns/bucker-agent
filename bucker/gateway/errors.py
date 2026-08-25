@@ -153,7 +153,7 @@ class AllProvidersFailedError(GatewayError):
     def __init__(self, attempts: list[dict]) -> None:
         self.attempts = attempts
         tried = ", ".join(
-            f"{a.get('provider', '?')}/{a.get('model', '?')}:"
+            f"{a.get('model', a.get('provider', '?'))}:"
             f"{a.get('error_type', '?')}"
             for a in attempts
         )

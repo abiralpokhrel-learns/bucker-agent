@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -72,24 +73,57 @@ def load_instances(path: Path | None = None) -> list[SWEInstance]:
 
 
 def _download_dataset(target: Path) -> None:
-    """Download SWE-bench Lite from the official repository."""
+    """Download SWE-bench Lite from Hugging Face and convert to JSON.
+
+    The old raw-GitHub URL is gone; the canonical copy now lives at
+    princeton-nlp/SWE-bench_Lite. The dev split ships as parquet, so we
+    convert to the flat JSON list this module expects. On Windows the
+    conversion runs inside the WSL harness venv (which has pandas).
+    """
     import urllib.request
 
     url = (
-        "https://raw.githubusercontent.com/princeton-nlp/SWE-bench/main/"
-        "swebench/harness/data/swe-bench-lite.json"
+        "https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/"
+        "resolve/main/data/test-00000-of-00001.parquet"
     )
     target.parent.mkdir(parents=True, exist_ok=True)
+    parquet = target.with_suffix(".parquet")
     tmp = target.with_suffix(".tmp")
     try:
-        urllib.request.urlretrieve(url, str(tmp))
-        tmp.replace(target)
+        urllib.request.urlretrieve(url, str(parquet))
     except Exception as exc:
+        if parquet.exists():
+            parquet.unlink()
+        raise SWEBenchError(
+            f"Failed to download SWE-bench Lite from {url}: {exc}"
+        ) from exc
+
+    convert_snippet = (
+        "import sys, json, pandas as pd;"
+        "df = pd.read_parquet(sys.argv[1]);"
+        "df.to_json(sys.argv[2], orient='records', lines=False)"
+    )
+    if sys.platform == "win32":
+        cmd = [
+            "wsl", "-d", WSL_DISTRO, "-u", "root", "-e",
+            WSL_HARNESS_PYTHON, "-c", convert_snippet,
+            _win_to_wsl_path(parquet), _win_to_wsl_path(tmp),
+        ]
+    else:
+        cmd = [sys.executable, "-c", convert_snippet, str(parquet), str(tmp)]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0 or not tmp.exists():
+        if parquet.exists():
+            parquet.unlink()
         if tmp.exists():
             tmp.unlink()
         raise SWEBenchError(
-            f"Failed to download SWE-bench Lite dataset from {url}: {exc}"
-        ) from exc
+            f"Failed to convert SWE-bench Lite parquet to JSON:\n"
+            f"{result.stderr[-500:]}"
+        )
+    tmp.replace(target)
+    parquet.unlink()
 
 
 # ----------------------------------------------------------- workspace seed ---
@@ -177,7 +211,7 @@ def run_evaluation(
     *,
     instances_path: Path | None = None,
     max_workers: int = 4,
-    cache_level: str = "none",
+    cache_level: str | None = None,
 ) -> list[dict]:
     """Run the official SWE-bench evaluation harness.
 
@@ -186,6 +220,11 @@ def run_evaluation(
 
     This calls the official harness via subprocess so the swebench package
     (which is heavy to import) is only loaded at evaluation time.
+    ``cache_level`` is accepted for backward compatibility but ignored —
+    swebench 5.x removed the flag.
+
+    Note: swebench's harness grades against the *test split* of its dataset
+    argument; we pass our downloaded test-split JSON directly.
     """
     instances_path = Path(instances_path or DATASET_PATH)
 
@@ -195,12 +234,18 @@ def run_evaluation(
             f"Download it first with load_instances()."
         )
 
+    # The official harness is POSIX-only (it imports `resource`), so on native
+    # Windows we run it inside WSL2 (Ubuntu-24.04) via a prepared venv at
+    # /root/swebench-venv. Windows paths are translated to /mnt/c/... so the
+    # harness in the VM reads the same files the host wrote.
+    if sys.platform == "win32":
+        return _run_evaluation_wsl(predictions_path, instances_path, max_workers, cache_level)
+
     cmd = [
-        "python", "-m", "swebench.harness.run_evaluation",
+        sys.executable, "-m", "swebench.harness.run_evaluation",
         "--dataset_name", str(instances_path),
         "--predictions_path", str(predictions_path),
         "--max_workers", str(max_workers),
-        "--cache_level", cache_level,
         "--run_id", "bucker-eval",
     ]
 
@@ -222,6 +267,65 @@ def run_evaluation(
         )
 
     # The harness writes results to a predictions file with .report.json suffix.
+    report_path = predictions_path.with_suffix(".report.json")
+    if not report_path.exists():
+        raise SWEBenchError(
+            f"evaluation completed but no report found at {report_path}"
+        )
+
+    return json.loads(report_path.read_text(encoding="utf-8"))
+
+
+#: WSL distro + venv used for the official harness on native Windows.
+WSL_DISTRO = "Ubuntu-24.04"
+WSL_HARNESS_PYTHON = "/root/swebench-venv/bin/python"
+
+
+def _win_to_wsl_path(p: Path) -> str:
+    """Translate a Windows path to its /mnt/<drive>/... WSL equivalent."""
+    resolved = str(Path(p).resolve())
+    drive = resolved[0].lower()
+    rest = resolved[2:].replace("\\", "/")
+    return f"/mnt/{drive}{rest}"
+
+
+def _run_evaluation_wsl(
+    predictions_path: Path,
+    instances_path: Path,
+    max_workers: int,
+    cache_level: str,
+) -> list[dict]:
+    """Run the official harness inside WSL2 (Windows-only path)."""
+    wsl_preds = _win_to_wsl_path(predictions_path)
+    wsl_instances = _win_to_wsl_path(instances_path)
+
+    cmd = [
+        "wsl", "-d", WSL_DISTRO, "-u", "root", "-e",
+        WSL_HARNESS_PYTHON, "-m", "swebench.harness.run_evaluation",
+        "--dataset_name", wsl_instances,
+        "--predictions_path", wsl_preds,
+        "--max_workers", str(max_workers),
+        "--run_id", "bucker-eval",
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=3600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SWEBenchError("evaluation timed out after 1 hour") from exc
+    except FileNotFoundError as exc:
+        raise SWEBenchError(
+            f"WSL not available ({exc}). Install Ubuntu-24.04 and the harness "
+            f"venv: see docs/WSL2_SETUP.md"
+        ) from exc
+
+    if result.returncode != 0:
+        raise SWEBenchError(
+            f"evaluation failed (exit {result.returncode}):\n"
+            f"stderr: {result.stderr[-1000:]}"
+        )
+
     report_path = predictions_path.with_suffix(".report.json")
     if not report_path.exists():
         raise SWEBenchError(

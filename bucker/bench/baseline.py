@@ -115,14 +115,29 @@ def build_workspace_view(sandbox: DockerSandbox, files: list[str]) -> str:
         # List everything visible in the workspace so the test is fair: the
         # structured pipeline lists files in the contract, the baseline
         # discovers them. Both get the same information, different mechanism.
+        # Real SWE-bench workspaces are full repo trees, so walk recursively
+        # (bounded depth + skip junk dirs) and prefer source files; a
+        # top-level-only listing sees nothing but directories and the model
+        # is left guessing — a strawman, not a baseline.
         try:
-            discovered = sorted(
-                p.name for p in sandbox.workspace.iterdir()
-                if p.is_file() and not p.name.startswith(".")
-            )
+            skip_dirs = {
+                ".git", "__pycache__", "node_modules", ".venv", "venv",
+                ".tox", ".mypy_cache", ".pytest_cache", "build", "dist",
+            }
+            src_exts = {".py", ".js", ".ts", ".rst", ".md", ".cfg", ".toml"}
+            discovered: list[str] = []
+            for p in sorted(sandbox.workspace.rglob("*")):
+                if len(p.relative_to(sandbox.workspace).parts) > 4:
+                    continue
+                if any(part in skip_dirs for part in p.parts):
+                    continue
+                rel = p.relative_to(sandbox.workspace).as_posix()
+                if p.is_file() and p.suffix in src_exts:
+                    discovered.append(rel)
+            files = discovered[:40]
         except OSError:
             discovered = []
-        files = discovered
+            files = []
 
     if not files:
         return "(no files in workspace)"
