@@ -3,28 +3,29 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, HTTPException, status
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 from starlette.websockets import WebSocketState
 
+from bucker.api.terminal import terminal_manager
 from bucker.config import settings
-from bucker.core.eventstore import EventStore, create_pool
-from bucker.api.terminal import TerminalManager, terminal_manager
+from bucker.core.eventstore import EventStore
 
 logger = logging.getLogger(__name__)
 
 ws_router = APIRouter()
+
 
 class ConnectionManager:
     """
     Manages active WebSocket connections for tasks, agents, and terminals.
     Provides methods to broadcast messages and clean up on disconnects.
     """
+
     def __init__(self):
-        self.task_connections: Dict[str, List[WebSocket]] = {}
-        self.agent_connections: Dict[str, List[WebSocket]] = {}
-        self.terminal_connections: Dict[str, List[WebSocket]] = {}
+        self.task_connections: dict[str, list[WebSocket]] = {}
+        self.agent_connections: dict[str, list[WebSocket]] = {}
+        self.terminal_connections: dict[str, list[WebSocket]] = {}
 
     async def connect_task(self, websocket: WebSocket, task_id: str):
         await websocket.accept()
@@ -74,31 +75,32 @@ class ConnectionManager:
             if not self.terminal_connections[session_id]:
                 del self.terminal_connections[session_id]
 
+
 manager = ConnectionManager()
 
 
-async def verify_token(websocket: WebSocket, token: Optional[str]):
+async def verify_token(websocket: WebSocket, token: str | None):
     """Verify the API token provided in the query string."""
-    if settings.api_token:
-        if token != settings.api_token:
-            # Dev bypass for localhost
-            client_host = websocket.client.host if websocket.client else ""
-            if client_host not in ("127.0.0.1", "localhost", "::1"):
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-                return False
+    if settings.api_token and token != settings.api_token:
+        # Dev bypass for localhost
+        client_host = websocket.client.host if websocket.client else ""
+        if client_host not in ("127.0.0.1", "localhost", "::1"):
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return False
     return True
 
 
 def _get_app_store() -> EventStore | None:
     try:
         from bucker.api.app import _get_store
+
         return _get_store()
     except Exception:
         return None
 
 
 @ws_router.websocket("/ws/tasks/{task_id}")
-async def task_events_ws(websocket: WebSocket, task_id: str, token: Optional[str] = Query(None)):
+async def task_events_ws(websocket: WebSocket, task_id: str, token: str | None = Query(None)):
     """
     Stream task events in real-time. Polls the event store every 500ms for new events.
     Closes automatically when the task reaches a terminal status.
@@ -107,9 +109,10 @@ async def task_events_ws(websocket: WebSocket, task_id: str, token: Optional[str
         return
 
     await manager.connect_task(websocket, task_id)
-    
+
     try:
         from uuid import UUID
+
         task_uuid = UUID(task_id)
     except ValueError:
         await websocket.send_json({"error": "Invalid task UUID"})
@@ -120,7 +123,7 @@ async def task_events_ws(websocket: WebSocket, task_id: str, token: Optional[str
     try:
         last_event_id = 0
         terminal_statuses = {"completed", "failed", "cancelled", "halted", "needs_human_review"}
-        
+
         while True:
             store = _get_app_store()
             if store is not None:
@@ -136,11 +139,15 @@ async def task_events_ws(websocket: WebSocket, task_id: str, token: Optional[str
                         }
                         await websocket.send_json({"type": "event", "event": ev_dict})
                         last_event_id = ev.id
-                        
+
                         # Terminal event check
-                        status_val = ev.payload.get("status") if isinstance(ev.payload, dict) else None
+                        status_val = (
+                            ev.payload.get("status") if isinstance(ev.payload, dict) else None
+                        )
                         if status_val in terminal_statuses:
-                            await websocket.send_json({"type": "terminal", "status": status_val})
+                            await websocket.send_json(
+                                {"type": "terminal", "status": status_val}
+                            )
                             await asyncio.sleep(0.5)
                             await websocket.close()
                             return
@@ -148,11 +155,11 @@ async def task_events_ws(websocket: WebSocket, task_id: str, token: Optional[str
                     logger.debug(f"Event store read exception: {store_err}")
 
             await asyncio.sleep(0.5)
-            
+
             # Simple ping to keep alive
             if websocket.client_state == WebSocketState.CONNECTED:
                 await websocket.send_json({"type": "ping"})
-            
+
     except WebSocketDisconnect:
         manager.disconnect_task(websocket, task_id)
     except Exception as e:
@@ -161,7 +168,7 @@ async def task_events_ws(websocket: WebSocket, task_id: str, token: Optional[str
 
 
 @ws_router.websocket("/ws/agent/{session_id}")
-async def agent_chat_ws(websocket: WebSocket, session_id: str, token: Optional[str] = Query(None)):
+async def agent_chat_ws(websocket: WebSocket, session_id: str, token: str | None = Query(None)):
     """
     Bidirectional agent chat channel.
     Receives user messages and sends back thought, tool_call, diff, token, or done events.
@@ -170,7 +177,7 @@ async def agent_chat_ws(websocket: WebSocket, session_id: str, token: Optional[s
         return
 
     await manager.connect_agent(websocket, session_id)
-    
+
     async def heartbeat():
         try:
             while True:
@@ -181,7 +188,7 @@ async def agent_chat_ws(websocket: WebSocket, session_id: str, token: Optional[s
             pass
 
     heartbeat_task = asyncio.create_task(heartbeat())
-    
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -189,15 +196,14 @@ async def agent_chat_ws(websocket: WebSocket, session_id: str, token: Optional[s
                 msg = json.loads(data)
                 if msg.get("type") == "user_message":
                     # Echo for now, normally would route to model
-                    await websocket.send_json({
-                        "type": "thought",
-                        "payload": f"Received: {msg.get('content')}"
-                    })
+                    await websocket.send_json(
+                        {"type": "thought", "payload": f"Received: {msg.get('content')}"}
+                    )
                 elif msg.get("type") == "pong":
-                    pass # heartbeat response
+                    pass  # heartbeat response
             except json.JSONDecodeError:
                 await websocket.send_json({"error": "Invalid JSON"})
-                
+
     except WebSocketDisconnect:
         manager.disconnect_agent(websocket, session_id)
         heartbeat_task.cancel()
@@ -208,7 +214,7 @@ async def agent_chat_ws(websocket: WebSocket, session_id: str, token: Optional[s
 
 
 @ws_router.websocket("/ws/terminal/{session_id}")
-async def terminal_ws(websocket: WebSocket, session_id: str, token: Optional[str] = Query(None)):
+async def terminal_ws(websocket: WebSocket, session_id: str, token: str | None = Query(None)):
     """
     PTY bridge for the terminal. Receives raw bytes (keystrokes) and sends back stdout/stderr.
     """
@@ -221,11 +227,12 @@ async def terminal_ws(websocket: WebSocket, session_id: str, token: Optional[str
         return
 
     await manager.connect_terminal(websocket, session_id)
-    
+
     async def read_from_pty():
         try:
             while True:
-                # Read from PTY (in a real app this should be async or run in executor to avoid blocking)
+                # Read from PTY (in a real app this should be async or run in executor to avoid
+                # blocking)
                 # But for this simple implementation, we assume non-blocking read
                 data = await asyncio.to_thread(session.read)
                 if data:
@@ -239,7 +246,7 @@ async def terminal_ws(websocket: WebSocket, session_id: str, token: Optional[str
             logger.error(f"Error reading from PTY: {e}")
 
     pty_reader_task = asyncio.create_task(read_from_pty())
-    
+
     try:
         while True:
             data = await websocket.receive_bytes()

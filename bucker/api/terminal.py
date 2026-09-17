@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import asyncio
+import logging
 import os
 import platform
 import subprocess
 import time
 import uuid
-import logging
-from typing import Dict, List, Optional, Any
-from pydantic import BaseModel
 
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel
 
 from bucker.config import settings
 
@@ -20,6 +18,7 @@ logger = logging.getLogger(__name__)
 try:
     if platform.system() == "Windows":
         import pywinpty
+
         HAS_PYWINPTY = True
     else:
         HAS_PYWINPTY = False
@@ -28,10 +27,11 @@ except ImportError:
 
 # Try importing pty for Unix PTY support
 try:
-    import pty
     import fcntl
-    import termios
+    import pty
     import struct
+    import termios
+
     HAS_PTY = True
 except ImportError:
     HAS_PTY = False
@@ -41,22 +41,23 @@ class TerminalSession:
     """
     Manages a single PTY session.
     """
-    def __init__(self, shell: Optional[str] = None):
+
+    def __init__(self, shell: str | None = None):
         self.session_id = str(uuid.uuid4())
         self.created_at = time.time()
         self.alive = True
-        
+
         self.is_windows = platform.system() == "Windows"
         self.shell = shell or (
             "cmd.exe" if self.is_windows else os.environ.get("SHELL", "/bin/bash")
         )
-        
+
         self.winpty_process = None
         self.subprocess = None
         self.master_fd = None
-        
+
         self._start_process()
-        
+
     def _start_process(self):
         try:
             if self.is_windows:
@@ -72,7 +73,7 @@ class TerminalSession:
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                        bufsize=0
+                        bufsize=0,
                     )
                     self.pid = self.subprocess.pid
             else:
@@ -85,7 +86,7 @@ class TerminalSession:
                         # Parent process
                         self.pid = pid
                         self.master_fd = master
-                        
+
                         # Set non-blocking
                         flags = fcntl.fcntl(self.master_fd, fcntl.F_GETFL)
                         fcntl.fcntl(self.master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
@@ -96,7 +97,7 @@ class TerminalSession:
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
-                        bufsize=0
+                        bufsize=0,
                     )
                     self.pid = self.subprocess.pid
         except Exception as e:
@@ -107,11 +108,11 @@ class TerminalSession:
     def write(self, data: bytes) -> None:
         if not self.alive:
             return
-            
+
         try:
             if self.is_windows:
                 if HAS_PYWINPTY and self.winpty_process:
-                    self.winpty_process.write(data.decode('utf-8', errors='replace'))
+                    self.winpty_process.write(data.decode("utf-8", errors="replace"))
                 elif self.subprocess and self.subprocess.stdin:
                     self.subprocess.stdin.write(data)
                     self.subprocess.stdin.flush()
@@ -128,21 +129,21 @@ class TerminalSession:
     def read(self) -> bytes:
         if not self.alive:
             return b""
-            
+
         try:
             if self.is_windows:
                 if HAS_PYWINPTY and self.winpty_process:
-                    # pywinpty read is blocking, we should be careful. 
+                    # pywinpty read is blocking, we should be careful.
                     # Using a short timeout or checking if data is available would be better.
                     data = self.winpty_process.read()
                     if not data:
                         self._check_alive()
-                    return data.encode('utf-8') if data else b""
+                    return data.encode("utf-8") if data else b""
                 elif self.subprocess and self.subprocess.stdout:
                     # this will block without non-blocking IO setup
                     # fallback only
                     self._check_alive()
-                    return b"" 
+                    return b""
             else:
                 if HAS_PTY and self.master_fd is not None:
                     try:
@@ -162,7 +163,7 @@ class TerminalSession:
             logger.error(f"Error reading from terminal {self.session_id}: {e}")
             self.alive = False
             return b""
-            
+
         return b""
 
     def _check_alive(self):
@@ -183,7 +184,7 @@ class TerminalSession:
     def resize(self, cols: int, rows: int) -> None:
         if not self.alive:
             return
-            
+
         if self.is_windows and HAS_PYWINPTY and self.winpty_process:
             self.winpty_process.set_size(cols, rows)
         elif not self.is_windows and HAS_PTY and self.master_fd is not None:
@@ -214,7 +215,7 @@ class TerminalSession:
             "session_id": self.session_id,
             "pid": self.pid,
             "created_at": self.created_at,
-            "alive": self.alive
+            "alive": self.alive,
         }
 
 
@@ -222,28 +223,29 @@ class TerminalManager:
     """
     Manages terminal sessions, respecting limits.
     """
-    def __init__(self):
-        self.sessions: Dict[str, TerminalSession] = {}
-        # Fetch from settings if possible, otherwise default 5
-        self.max_sessions = getattr(settings, 'max_terminal_sessions', 5)
 
-    def create_session(self, shell: Optional[str] = None) -> str:
+    def __init__(self):
+        self.sessions: dict[str, TerminalSession] = {}
+        # Fetch from settings if possible, otherwise default 5
+        self.max_sessions = getattr(settings, "max_terminal_sessions", 5)
+
+    def create_session(self, shell: str | None = None) -> str:
         # Clean up dead sessions
         dead_sessions = [sid for sid, s in self.sessions.items() if not s.alive]
         for sid in dead_sessions:
             self.close_session(sid)
-            
+
         if len(self.sessions) >= self.max_sessions:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Maximum number of terminal sessions ({self.max_sessions}) reached."
+                detail=f"Maximum number of terminal sessions ({self.max_sessions}) reached.",
             )
-            
+
         session = TerminalSession(shell=shell)
         self.sessions[session.session_id] = session
         return session.session_id
 
-    def get_session(self, session_id: str) -> Optional[TerminalSession]:
+    def get_session(self, session_id: str) -> TerminalSession | None:
         return self.sessions.get(session_id)
 
     def close_session(self, session_id: str) -> None:
@@ -251,7 +253,7 @@ class TerminalManager:
         if session:
             session.close()
 
-    def list_sessions(self) -> List[dict]:
+    def list_sessions(self) -> list[dict]:
         return [session.to_dict() for session in self.sessions.values()]
 
     def close_all(self) -> None:
@@ -262,30 +264,36 @@ class TerminalManager:
 terminal_manager = TerminalManager()
 terminal_router = APIRouter(prefix="/api/terminal/sessions", tags=["terminal"])
 
+
 class CreateSessionRequest(BaseModel):
-    shell: Optional[str] = None
+    shell: str | None = None
+
 
 class ResizeRequest(BaseModel):
     cols: int
     rows: int
 
+
 @terminal_router.post("", response_model=dict)
-async def create_session(req: Optional[CreateSessionRequest] = None):
+async def create_session(req: CreateSessionRequest | None = None):
     """Create a new terminal session."""
     shell = req.shell if req else None
     session_id = terminal_manager.create_session(shell=shell)
     session = terminal_manager.get_session(session_id)
     return {"session_id": session_id, "pid": session.pid if session else None}
 
-@terminal_router.get("", response_model=List[dict])
+
+@terminal_router.get("", response_model=list[dict])
 async def list_sessions():
     """List active terminal sessions."""
     return terminal_manager.list_sessions()
+
 
 @terminal_router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def close_session(session_id: str):
     """Close a terminal session."""
     terminal_manager.close_session(session_id)
+
 
 @terminal_router.post("/{session_id}/resize", status_code=status.HTTP_200_OK)
 async def resize_session(session_id: str, req: ResizeRequest):

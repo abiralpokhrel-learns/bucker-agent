@@ -7,6 +7,11 @@ Hermes owns the agent loop. `bucker/desktop_gateway` reuses Bucker's RouterEngin
 
 ## Windows installer
 
+Download the installer and SHA256 checksums from
+[GitHub Releases](https://github.com/abiralpokhrel-learns/bucker-agent/releases).
+Generated packages are release assets, not source files; `desktop/release/` is
+ignored by Git and remains available locally after builds.
+
 `release/Bucker-Desktop-2.0.0-Setup.exe` is a single x64 NSIS installer containing Electron, the renderer, Python 3.12.10, Hermes 0.20.5 sources and 71 Python packages, and the standalone gateway. No user credentials or profiles are included. Enter your provider key after launch. Internet is needed for model calls; project-specific compilers, Git/Bash, Node and other toolchains are not included.
 
 This unsigned developer-preview installer was built successfully, but Device Guard blocked installation on the test host. Do not disable organizational policy to install it; administrator approval/signing is needed. The unpacked packaged payload was used for acceptance testing, not a clean installed system.
@@ -23,7 +28,7 @@ From `desktop/`:
     npm run build:main
     npm start
 
-Open a folder. Providers are under the gear button. Keys are entered by the user and persisted with Electron safeStorage. Use free-only provider accounts; Bucker cannot inspect or enforce an external account's billing configuration. Connect Hermes after setting up providers. Local agent tools execute on the host, not inside a Docker sandbox.
+Open a folder. Providers are under the gear button. Keys are entered by the user and persisted with Electron safeStorage. Use free-only provider accounts; Bucker cannot inspect or enforce an external account's billing configuration. Connect the agent after setting up providers. Local agent tools execute on the host, not inside a Docker sandbox.
 
 Do not use this preview on an irreplaceable workspace. Use version control and review changes. Desktop editor file access is workspace-scoped, but this is NOT a security sandbox for Hermes tools.
 

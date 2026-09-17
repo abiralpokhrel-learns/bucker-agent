@@ -238,10 +238,15 @@ class OpenAICompatAdapter(ProviderAdapter):
                     except ValueError:
                         continue  # keepalive / comment lines are noise
                     if not isinstance(data, dict):
-                        raise ProviderUnavailableError("malformed stream", provider=self.name, model=model_id)
+                        raise ProviderUnavailableError(
+                            "malformed stream", provider=self.name, model=model_id
+                        )
                     if data.get("error"):
                         upstream_error = data["error"]
-                        code = upstream_error.get("code", 503) if isinstance(upstream_error, dict) else 503
+                        code = (
+                            upstream_error.get("code", 503)
+                            if isinstance(upstream_error, dict) else 503
+                        )
                         status = int(code) if str(code).isdigit() else 503
                         raise self._map_error(status, json.dumps(data), model_id)
                     events, fr = self._normalize_chunk(data, text_parts, tool_acc)

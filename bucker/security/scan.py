@@ -14,8 +14,14 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("Google API Key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
     ("Stripe Key", re.compile(r"[sr]k_(?:live|test)_[A-Za-z0-9]{24,}")),
     ("Slack Token", re.compile(r"xox[bpars]-[A-Za-z0-9-]{10,}")),
-    ("Generic High Entropy", re.compile(r"(?i)(?:key|secret|token|password)\s*[:=]\s*['\"]?([A-Za-z0-9/+=]{40,})['\"]?")),
+    (
+        "Generic High Entropy",
+        re.compile(
+            r"(?i)(?:key|secret|token|password)\s*[:=]\s*['\"]?([A-Za-z0-9/+=]{40,})['\"]?"
+        ),
+    ),
 ]
+
 
 @dataclass(slots=True)
 class SecretFinding:
@@ -25,9 +31,11 @@ class SecretFinding:
     snippet: str
     confidence: float
 
+
 def get_allowlist() -> set[str]:
     env_val = os.getenv("BUCKER_SECRET_ALLOWLIST", "")
     return {p.strip() for p in env_val.split(",") if p.strip()}
+
 
 def scan_text(text: str) -> list[SecretFinding]:
     findings = []
@@ -44,11 +52,12 @@ def scan_text(text: str) -> list[SecretFinding]:
                         pattern_name=pattern_name,
                         line=line_idx + 1,
                         column=match.start() + 1,
-                        snippet=line[max(0, match.start() - 20):match.end() + 20].strip(),
-                        confidence=0.9
+                        snippet=line[max(0, match.start() - 20) : match.end() + 20].strip(),
+                        confidence=0.9,
                     )
                 )
     return findings
+
 
 def scan_file(path: Path) -> list[SecretFinding]:
     try:
@@ -56,6 +65,7 @@ def scan_file(path: Path) -> list[SecretFinding]:
         return scan_text(content)
     except Exception:
         return []
+
 
 def scan_directory(root: Path, *, exclude: list[str]) -> list[SecretFinding]:
     findings = []
@@ -69,6 +79,7 @@ def scan_directory(root: Path, *, exclude: list[str]) -> list[SecretFinding]:
             if not skip:
                 findings.extend(scan_file(filepath))
     return findings
+
 
 def redact(text: str) -> str:
     allowlist = get_allowlist()

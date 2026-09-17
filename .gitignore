@@ -56,6 +56,12 @@ build/
 .coverage
 htmlcov/
 
+# --- desktop generated assets ---------------------------------------------
+# Publish installers via GitHub Releases, not the source tree.
+/desktop/release/
+/desktop/build/
+node_modules/
+
 # --- editors / os ----------------------------------------------------------
 .idea/
 .vscode/

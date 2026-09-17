@@ -37,6 +37,7 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.status import (
@@ -77,16 +78,14 @@ app = FastAPI(
     description="Durable, verified agent execution. Nothing is trusted until verified.",
 )
 
-from fastapi.middleware.cors import CORSMiddleware
-
+from bucker.api.chat import chat_router  # noqa: E402
+from bucker.api.files import files_router  # noqa: E402
 from bucker.api.gateway import health_router  # noqa: E402
 from bucker.api.gateway import router as gateway_router  # noqa: E402
-from bucker.api.ws import ws_router  # noqa: E402
-from bucker.api.terminal import terminal_router  # noqa: E402
-from bucker.api.files import files_router  # noqa: E402
-from bucker.api.chat import chat_router  # noqa: E402
 from bucker.api.onboarding import onboarding_router  # noqa: E402
 from bucker.api.routers.export import export_router  # noqa: E402
+from bucker.api.terminal import terminal_router  # noqa: E402
+from bucker.api.ws import ws_router  # noqa: E402
 
 app.add_middleware(
     CORSMiddleware,

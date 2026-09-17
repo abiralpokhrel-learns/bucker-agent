@@ -1,6 +1,0 @@
-python312.zip
-.
-Lib/site-packages
-../hermes
-../gateway
-import site

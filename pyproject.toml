@@ -87,6 +87,13 @@ filterwarnings = ["ignore::DeprecationWarning"]
 [tool.ruff]
 line-length = 96
 target-version = "py311"
+# Vendored/generated trees shipped with the desktop app are not first-party
+# code and are not formatted or reviewed under this project's lint rules.
+extend-exclude = [
+    "desktop/core",
+    "desktop/build",
+    "desktop/release",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from dataclasses import dataclass
@@ -10,13 +11,16 @@ from bucker.verifiers.base import VerificationResult
 
 MAX_DIAGNOSTIC_CHARS = 4000
 
+
 @dataclass(slots=True)
 class TypeScriptVerifier:
     name: str = "typescript_test_runner"
     task_types: tuple[str, ...] = ("code_change",)
     timeout_s: int = 300
 
-    async def verify(self, task: Task, result: WorkerResult, sandbox: DockerSandbox) -> VerificationResult:
+    async def verify(
+        self, task: Task, result: WorkerResult, sandbox: DockerSandbox
+    ) -> VerificationResult:
         started = time.perf_counter()
 
         if result.status == "blocked":
@@ -36,16 +40,14 @@ class TypeScriptVerifier:
         diagnostics = ""
         passed = tsc_run.exit_code == 0
         details = {"tsc_exit_code": tsc_run.exit_code}
-        
+
         if not passed:
             diagnostics += f"TypeScript errors:\n{tsc_run.stdout}\n{tsc_run.stderr}\n\n"
 
         # Testing
         pkg_json = ""
-        try:
+        with contextlib.suppress(Exception):
             pkg_json = sandbox.read_file("package.json")
-        except Exception:
-            pass
 
         if "vitest" in pkg_json:
             test_cmd = "npx vitest run --reporter=json"
@@ -57,7 +59,7 @@ class TypeScriptVerifier:
         test_run = await sandbox.exec(test_cmd, timeout_s=self.timeout_s)
         details["test_exit_code"] = test_run.exit_code
         details["timed_out"] = test_run.timed_out
-        
+
         if test_run.timed_out:
             return VerificationResult(
                 passed=False,
@@ -71,18 +73,18 @@ class TypeScriptVerifier:
             try:
                 # Find JSON part of output
                 output = test_run.stdout
-                start_idx = output.find('{')
-                end_idx = output.rfind('}')
+                start_idx = output.find("{")
+                end_idx = output.rfind("}")
                 if start_idx != -1 and end_idx != -1:
-                    json_str = output[start_idx:end_idx+1]
+                    json_str = output[start_idx : end_idx + 1]
                     parsed = json.loads(json_str)
-                    
+
                     passed_count = parsed.get("numPassedTests", 0)
                     failed_count = parsed.get("numFailedTests", 0)
-                    
+
                     details["passed"] = passed_count
                     details["failed"] = failed_count
-                    
+
                     if failed_count > 0:
                         passed = False
                         failed_names = []
@@ -91,7 +93,9 @@ class TypeScriptVerifier:
                                 if "assertionResults" in tr:
                                     for ar in tr["assertionResults"]:
                                         if ar.get("status") == "failed":
-                                            failed_names.append(ar.get("fullName", ar.get("title", "Unknown")))
+                                            failed_names.append(
+                                                ar.get("fullName", ar.get("title", "Unknown"))
+                                            )
                         diagnostics += f"{failed_count} failed, {passed_count} passed\n"
                         diagnostics += "Failing tests: " + ", ".join(failed_names[:20]) + "\n"
                 else:
@@ -108,7 +112,9 @@ class TypeScriptVerifier:
                 diagnostics += "Tests failed\n"
 
         if not passed:
-            output_tail = (test_run.stdout + "\n" + test_run.stderr).strip()[-MAX_DIAGNOSTIC_CHARS:]
+            output_tail = (test_run.stdout + "\n" + test_run.stderr).strip()[
+                -MAX_DIAGNOSTIC_CHARS:
+            ]
             diagnostics += f"\n--- test output tail ---\n{output_tail}"
 
         if passed and not diagnostics:
@@ -122,7 +128,9 @@ class TypeScriptVerifier:
             duration_ms=int((time.perf_counter() - started) * 1000),
         )
 
-    async def _verify_files_exist(self, task: Task, sandbox: DockerSandbox, started: float) -> VerificationResult:
+    async def _verify_files_exist(
+        self, task: Task, sandbox: DockerSandbox, started: float
+    ) -> VerificationResult:
         missing, empty = [], []
         for path in task.files:
             try:
@@ -131,7 +139,7 @@ class TypeScriptVerifier:
                     empty.append(path)
             except Exception:
                 missing.append(path)
-                
+
         problems = [f"missing: {p}" for p in missing] + [f"empty: {p}" for p in empty]
         if problems:
             return VerificationResult(

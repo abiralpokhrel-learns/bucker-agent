@@ -9,7 +9,7 @@
     "build:main": "tsc -p tsconfig.json",
     "start": "electron .",
     "dev": "tsc -p tsconfig.json -w",
-    "package:win": "npm run build:main && electron-builder --win nsis --x64"
+    "package:win": "node packaging/sync-gateway.cjs && npm --prefix ../bucker/frontend run build && npm run build:main && electron-builder --win nsis --x64"
   },
   "build": {
     "appId": "org.bucker.desktop",

@@ -27,6 +27,60 @@ cost-bounded, and benchmarkable. The LLM is the replaceable part — swap it
 next year and the platform works the same. Durability, verification, and
 evidence-based improvement is what the system actually *is*.
 
+## Bucker Desktop (Windows developer preview)
+
+Bucker now includes a desktop coding workspace: a Monaco editor, file explorer,
+Bucker assistant panel, provider settings, and a VS Code-inspired dark theme.
+The existing durable CLI/API platform remains available separately.
+
+### Download and install
+
+Open [GitHub Releases](https://github.com/abiralpokhrel-learns/bucker-agent/releases)
+and select the latest **Bucker Desktop** preview. Download the
+`Bucker-Desktop-2.0.0-Setup.exe` asset, not GitHub's source-code ZIP.
+Checksums and verification notes accompany the installer.
+
+1. Run the Windows x64 installer and open **Bucker Desktop**.
+2. Open a project folder. Use a version-controlled copy of your work.
+3. Open **Providers** (gear icon), choose a provider, and follow its key setup
+   instructions. Enter your own key; no credentials ship with the app.
+4. Connect the agent and send a small task. Review requested permissions and edits.
+
+The installer bundles Python, the agent harness, and the local inference gateway;
+no separate Python or Hermes installation is required. Editing works offline.
+Cloud model calls still require internet and a provider account. Project tools
+such as Git, Node, compilers, and language servers are not bundled.
+
+**Unsigned preview:** Windows or organizational policy may block installation.
+Do not disable security policy; obtain administrator approval where required.
+Packaged-app testing is not a guarantee of installation on every Windows machine.
+
+### Desktop features and recent fixes
+
+- Monaco editing, file tabs, workspace reopening, and saved-file persistence.
+- `Ctrl+S` to save, `Ctrl+B` to toggle the sidebar, `Ctrl+Shift+P` for commands;
+  word-wrap and minimap toggles.
+- Provider setup pages with instructions and model search. The current catalog
+  includes OpenRouter, Gemini, Groq, Mistral, SambaNova, and Hugging Face.
+  Availability and free-tier limits depend on each provider; the OpenRouter
+  catalog currently accepts only `:free` models, not every zero-priced model.
+- User-facing Bucker branding, with upstream licenses retained in the bundle.
+- Gateway errors distinguish rejected keys, rate limits, quota exhaustion, and
+  timeouts instead of reducing every failure to “stream interrupted.”
+- Longer generation budgets: a 300-second request deadline and a 120-second
+  per-attempt timeout. Provider outages and interrupted streams can still occur.
+
+**Preview limitations:** desktop agent tools run on your host, not in the Docker
+sandbox. Optional strict verified execution through MCP is not wired into the
+preview. Unsaved edits can be lost on shutdown. Live provider task completion,
+code signing, automatic updates, and clean-machine installation need further
+validation. Additional OpenRouter/OpenCode models are not included yet.
+
+See [desktop development and verification](desktop/README.md) and
+[provider notes](desktop/PROVIDERS.md). The agent harness is provided by
+[Hermes Agent](https://github.com/NousResearch/hermes-agent); Bucker adds the
+desktop workspace and inference gateway. Upstream attribution is preserved.
+
 ## Why bucker-agent?
 
 | Symbol | Promise |

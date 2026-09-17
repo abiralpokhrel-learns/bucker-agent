@@ -10,13 +10,16 @@ from bucker.verifiers.base import VerificationResult
 
 MAX_DIAGNOSTIC_CHARS = 4000
 
+
 @dataclass(slots=True)
 class RustVerifier:
     name: str = "rust_test_runner"
     task_types: tuple[str, ...] = ("code_change",)
     timeout_s: int = 600
 
-    async def verify(self, task: Task, result: WorkerResult, sandbox: DockerSandbox) -> VerificationResult:
+    async def verify(
+        self, task: Task, result: WorkerResult, sandbox: DockerSandbox
+    ) -> VerificationResult:
         started = time.perf_counter()
 
         if result.status == "blocked":
@@ -32,7 +35,9 @@ class RustVerifier:
             return await self._verify_files_exist(task, sandbox, started)
 
         # Run tests
-        test_run = await sandbox.exec("cargo test --message-format=json", timeout_s=self.timeout_s)
+        test_run = await sandbox.exec(
+            "cargo test --message-format=json", timeout_s=self.timeout_s
+        )
         details = {"test_exit_code": test_run.exit_code, "timed_out": test_run.timed_out}
         passed = test_run.exit_code == 0
         diagnostics = ""
@@ -61,11 +66,16 @@ class RustVerifier:
             diagnostics += f"Tests failed: {len(failing_tests)} failing\n"
             if failing_tests:
                 diagnostics += "Failing tests: " + ", ".join(failing_tests[:20]) + "\n"
-            output_tail = (test_run.stdout + "\n" + test_run.stderr).strip()[-MAX_DIAGNOSTIC_CHARS:]
+            output_tail = (test_run.stdout + "\n" + test_run.stderr).strip()[
+                -MAX_DIAGNOSTIC_CHARS:
+            ]
             diagnostics += f"\n--- test output tail ---\n{output_tail}\n\n"
 
-        # Run clippy for warnings (does not fail the verify unless it exits non-zero if we want to be strict, but requirements say "warnings as diagnostics, not failures")
-        clippy_run = await sandbox.exec("cargo clippy --message-format=json", timeout_s=self.timeout_s)
+        # Run clippy for warnings (does not fail the verify unless it exits non-zero if we want
+        # to be strict, but requirements say "warnings as diagnostics, not failures")
+        clippy_run = await sandbox.exec(
+            "cargo clippy --message-format=json", timeout_s=self.timeout_s
+        )
         for line in clippy_run.stdout.splitlines():
             try:
                 msg = json.loads(line)
@@ -92,7 +102,9 @@ class RustVerifier:
             duration_ms=int((time.perf_counter() - started) * 1000),
         )
 
-    async def _verify_files_exist(self, task: Task, sandbox: DockerSandbox, started: float) -> VerificationResult:
+    async def _verify_files_exist(
+        self, task: Task, sandbox: DockerSandbox, started: float
+    ) -> VerificationResult:
         missing, empty = [], []
         for path in task.files:
             try:
@@ -101,7 +113,7 @@ class RustVerifier:
                     empty.append(path)
             except Exception:
                 missing.append(path)
-                
+
         problems = [f"missing: {p}" for p in missing] + [f"empty: {p}" for p in empty]
         if problems:
             return VerificationResult(

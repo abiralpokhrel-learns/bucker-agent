@@ -4,39 +4,38 @@ import base64
 import fnmatch
 import json
 import os
-import re
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-
-from bucker.config import settings
 
 # Assuming these imports based on standard bucker architecture
 # In a real scenario, adjust these if they don't exactly match
-from bucker.core.blob import BlobStore
-from bucker.core.eventstore import EventStore
 
 files_router = APIRouter(prefix="/api/files", tags=["files"])
+
 
 def validate_path(path_str: str) -> Path:
     """Validate that the path is within the allowed workspace roots."""
     try:
         path = Path(path_str).resolve()
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid path: {e}")
-    
+        raise HTTPException(status_code=400, detail=f"Invalid path: {e}") from e
+
     # In a real environment, validate against settings.workspace_roots
     # Here we just check if it's an absolute path for simplicity
     # For bucker, we typically check if path is relative to one of the allowed roots.
-    # if not any(path.is_relative_to(Path(root).resolve()) for root in settings.workspace_roots):
-    #     raise HTTPException(status_code=403, detail="Path traversal detected or path outside workspace roots.")
-    
+    # if not any(path.is_relative_to(Path(root).resolve()) for root in
+    # settings.workspace_roots):
+    # raise HTTPException(status_code=403, detail="Path traversal detected or path outside
+    # workspace roots.")
+
     return path
 
-def get_language(path: Path) -> Optional[str]:
+
+def get_language(path: Path) -> str | None:
     ext = path.suffix.lower()
     mapping = {
         ".py": "python",
@@ -57,13 +56,14 @@ def get_language(path: Path) -> Optional[str]:
     }
     return mapping.get(ext)
 
-def parse_gitignore(root: Path) -> List[str]:
+
+def parse_gitignore(root: Path) -> list[str]:
     gitignore_path = root / ".gitignore"
     if not gitignore_path.exists():
         return [".git"]
     patterns = [".git"]
     try:
-        with open(gitignore_path, "r", encoding="utf-8") as f:
+        with open(gitignore_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#"):
@@ -72,22 +72,24 @@ def parse_gitignore(root: Path) -> List[str]:
         pass
     return patterns
 
-def is_ignored(path: Path, root: Path, patterns: List[str]) -> bool:
+
+def is_ignored(path: Path, root: Path, patterns: list[str]) -> bool:
     try:
         rel_path = path.relative_to(root).as_posix()
     except ValueError:
         return False
     for p in patterns:
-        if fnmatch.fnmatch(rel_path, p) or fnmatch.fnmatch(rel_path, f"*/{p}") or fnmatch.fnmatch(path.name, p):
+        if (
+            fnmatch.fnmatch(rel_path, p)
+            or fnmatch.fnmatch(rel_path, f"*/{p}")
+            or fnmatch.fnmatch(path.name, p)
+        ):
             return True
     return False
 
+
 @files_router.get("/tree")
-async def get_tree(
-    root: str,
-    max_depth: int = 5,
-    show_hidden: bool = False
-) -> Dict[str, Any]:
+async def get_tree(root: str, max_depth: int = 5, show_hidden: bool = False) -> dict[str, Any]:
     """Get recursive directory tree."""
     root_path = validate_path(root)
     if not root_path.is_dir():
@@ -95,10 +97,10 @@ async def get_tree(
 
     ignore_patterns = parse_gitignore(root_path)
 
-    def build_tree(current_path: Path, current_depth: int) -> Optional[Dict[str, Any]]:
+    def build_tree(current_path: Path, current_depth: int) -> dict[str, Any] | None:
         if not show_hidden and current_path.name.startswith(".") and current_path.name != ".":
             return None
-        
+
         if not show_hidden and is_ignored(current_path, root_path, ignore_patterns):
             return None
 
@@ -121,18 +123,28 @@ async def get_tree(
                             children.append(child_node)
                 except PermissionError:
                     pass
-                node["children"] = sorted(children, key=lambda x: (x["type"] != "directory", x["name"].lower()))
+                node["children"] = sorted(
+                    children, key=lambda x: (x["type"] != "directory", x["name"].lower())
+                )
             else:
                 node["children"] = []
         return node
 
     tree = build_tree(root_path, 0)
     if not tree:
-        tree = {"name": root_path.name, "path": str(root_path), "type": "directory", "children": []}
+        tree = {
+            "name": root_path.name,
+            "path": str(root_path),
+            "type": "directory",
+            "children": [],
+        }
     return tree
 
+
 @files_router.get("/read")
-async def read_file(path: str = Query(..., description="Absolute path to the file")) -> Dict[str, Any]:
+async def read_file(
+    path: str = Query(..., description="Absolute path to the file"),
+) -> dict[str, Any]:
     """Read a file's content."""
     file_path = validate_path(path)
     if not file_path.is_file():
@@ -150,36 +162,38 @@ async def read_file(path: str = Query(..., description="Absolute path to the fil
         except UnicodeDecodeError:
             content = base64.b64encode(content_bytes).decode("ascii")
             encoding = "base64"
-            
+
         return {
             "content": content,
             "language": get_language(file_path),
             "size": size,
-            "encoding": encoding
+            "encoding": encoding,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
 
 class WriteRequest(BaseModel):
     path: str
     content: str
 
+
 @files_router.put("/write")
-async def write_file(req: WriteRequest) -> Dict[str, Any]:
+async def write_file(req: WriteRequest) -> dict[str, Any]:
     """Write content to a file, backing up the old version if it exists."""
     file_path = validate_path(req.path)
-    
+
     backed_up = False
     backup_ref = None
-    
+
     if file_path.exists():
         try:
-            old_content = file_path.read_bytes()
+            file_path.read_bytes()
             # Assuming BlobStore or put_blob is available in bucker.core.blob
             # backup_ref = await put_blob(old_content)
-            backup_ref = "blob_" + os.urandom(8).hex() # Mock blob ref
+            backup_ref = "blob_" + os.urandom(8).hex()  # Mock blob ref
             backed_up = True
-        except Exception as e:
+        except Exception:
             # Continue writing even if backup fails? Or fail safely.
             pass
 
@@ -188,15 +202,16 @@ async def write_file(req: WriteRequest) -> Dict[str, Any]:
         file_path.write_text(req.content, encoding="utf-8")
         return {"backed_up": backed_up, "backup_ref": backup_ref}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
 
 @files_router.get("/diff")
-async def get_diff(task_id: str) -> Dict[str, Any]:
+async def get_diff(task_id: str) -> dict[str, Any]:
     """Get structured diff for a task."""
     # In a real implementation, we would fetch the WorkerCompleted event
     # from the EventStore, extract the diff, apply it to workspace files,
     # and return structured original/modified pairs for Monaco DiffEditor.
-    
+
     # Mock response
     return {
         "files": [
@@ -204,19 +219,20 @@ async def get_diff(task_id: str) -> Dict[str, Any]:
                 "path": "/mock/path/file.py",
                 "original": "def old():\n    pass\n",
                 "modified": "def new():\n    pass\n",
-                "language": "python"
+                "language": "python",
             }
         ]
     }
+
 
 @files_router.get("/search")
 async def search_files(
     q: str,
     root: str,
     max_results: int = 50,
-    include: Optional[str] = None,
-    case_sensitive: bool = False
-) -> Dict[str, Any]:
+    include: str | None = None,
+    case_sensitive: bool = False,
+) -> dict[str, Any]:
     """Search code across workspace."""
     root_path = validate_path(root)
     if not root_path.is_dir():
@@ -236,7 +252,7 @@ async def search_files(
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, _ = proc.communicate()
-        
+
         for line in stdout.splitlines():
             if not line.strip():
                 continue
@@ -246,34 +262,32 @@ async def search_files(
                     if len(results) >= max_results:
                         truncated = True
                         break
-                    
+
                     match_data = data["data"]
                     path = match_data["path"]["text"]
                     line_num = match_data["line_number"]
                     content = match_data["lines"]["text"]
-                    
+
                     # For simplicity, extract first submatch bounds
                     submatches = match_data.get("submatches", [])
                     match_start = submatches[0]["start"] if submatches else 0
                     match_end = submatches[0]["end"] if submatches else len(content)
-                    
-                    results.append({
-                        "path": path,
-                        "line": line_num,
-                        "content": content,
-                        "match_start": match_start,
-                        "match_end": match_end
-                    })
+
+                    results.append(
+                        {
+                            "path": path,
+                            "line": line_num,
+                            "content": content,
+                            "match_start": match_start,
+                            "match_end": match_end,
+                        }
+                    )
                     total += 1
             except json.JSONDecodeError:
                 pass
-                
+
     except FileNotFoundError:
         # ripgrep not available, fallback to Python
         pass
-        
-    return {
-        "results": results,
-        "total": total,
-        "truncated": truncated
-    }
+
+    return {"results": results, "total": total, "truncated": truncated}

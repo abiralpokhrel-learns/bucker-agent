@@ -10,6 +10,7 @@ from bucker.verifiers.base import VerificationResult
 
 MAX_DIAGNOSTIC_CHARS = 4000
 
+
 @dataclass(slots=True)
 class LintVerifier:
     name: str = "lint_checker"
@@ -17,7 +18,9 @@ class LintVerifier:
     strict_mode: bool = False
     timeout_s: int = 120
 
-    async def verify(self, task: Task, result: WorkerResult, sandbox: DockerSandbox) -> VerificationResult:
+    async def verify(
+        self, task: Task, result: WorkerResult, sandbox: DockerSandbox
+    ) -> VerificationResult:
         started = time.perf_counter()
 
         if result.status == "blocked":
@@ -45,17 +48,26 @@ class LintVerifier:
 
         lint_run = await sandbox.exec(lint_cmd, timeout_s=self.timeout_s)
         passed = lint_run.exit_code == 0
-        details = {"lint_cmd": lint_cmd, "exit_code": lint_run.exit_code, "timed_out": lint_run.timed_out}
+        details = {
+            "lint_cmd": lint_cmd,
+            "exit_code": lint_run.exit_code,
+            "timed_out": lint_run.timed_out,
+        }
         diagnostics = ""
 
         if lint_run.timed_out:
             passed = False
             diagnostics = f"linter timed out after {self.timeout_s}s"
 
-        if not passed or (self.strict_mode and (lint_run.stdout.strip() or lint_run.stderr.strip())):
+        if not passed or (
+            self.strict_mode and (lint_run.stdout.strip() or lint_run.stderr.strip())
+        ):
             passed = False if self.strict_mode else passed
             output = (lint_run.stdout + "\n" + lint_run.stderr).strip()
-            diagnostics = f"Lint issues found (exit code {lint_run.exit_code}):\n{output[-MAX_DIAGNOSTIC_CHARS:]}"
+            diagnostics = (
+                f"Lint issues found (exit code {lint_run.exit_code}):\n"
+                f"{output[-MAX_DIAGNOSTIC_CHARS:]}"
+            )
         else:
             diagnostics = "Lint checks passed"
 

@@ -10,13 +10,16 @@ from bucker.verifiers.base import VerificationResult
 
 MAX_DIAGNOSTIC_CHARS = 4000
 
+
 @dataclass(slots=True)
 class GoVerifier:
     name: str = "go_test_runner"
     task_types: tuple[str, ...] = ("code_change",)
     timeout_s: int = 300
 
-    async def verify(self, task: Task, result: WorkerResult, sandbox: DockerSandbox) -> VerificationResult:
+    async def verify(
+        self, task: Task, result: WorkerResult, sandbox: DockerSandbox
+    ) -> VerificationResult:
         started = time.perf_counter()
 
         if result.status == "blocked":
@@ -58,14 +61,18 @@ class GoVerifier:
             diagnostics += f"Tests failed: {len(failing_tests)} failing\n"
             if failing_tests:
                 diagnostics += "Failing tests: " + ", ".join(set(failing_tests[:20])) + "\n"
-            output_tail = (test_run.stdout + "\n" + test_run.stderr).strip()[-MAX_DIAGNOSTIC_CHARS:]
+            output_tail = (test_run.stdout + "\n" + test_run.stderr).strip()[
+                -MAX_DIAGNOSTIC_CHARS:
+            ]
             diagnostics += f"\n--- test output tail ---\n{output_tail}\n\n"
 
         vet_run = await sandbox.exec("go vet ./...", timeout_s=self.timeout_s)
         if vet_run.exit_code != 0:
             vet_warnings = vet_run.stderr.strip()
             if vet_warnings:
-                diagnostics += "go vet warnings:\n" + vet_warnings[-MAX_DIAGNOSTIC_CHARS:] + "\n"
+                diagnostics += (
+                    "go vet warnings:\n" + vet_warnings[-MAX_DIAGNOSTIC_CHARS:] + "\n"
+                )
 
         if passed and not diagnostics:
             diagnostics = "All checks passed"
@@ -78,7 +85,9 @@ class GoVerifier:
             duration_ms=int((time.perf_counter() - started) * 1000),
         )
 
-    async def _verify_files_exist(self, task: Task, sandbox: DockerSandbox, started: float) -> VerificationResult:
+    async def _verify_files_exist(
+        self, task: Task, sandbox: DockerSandbox, started: float
+    ) -> VerificationResult:
         missing, empty = [], []
         for path in task.files:
             try:
@@ -87,7 +96,7 @@ class GoVerifier:
                     empty.append(path)
             except Exception:
                 missing.append(path)
-                
+
         problems = [f"missing: {p}" for p in missing] + [f"empty: {p}" for p in empty]
         if problems:
             return VerificationResult(
