@@ -33,3 +33,16 @@
 - **Verified:** desktop build clean; 9/9 Node tests (branding, ACP transport, session,
   runtime, workspace, bundle); bundled runtime handshake still reports hermes-agent 0.20.5.
 - **Committed:** `03352a4`.
+
+## Cycle 4 — long-generation budget (2026-09-18)
+- 90s engine deadline / 60s attempt timeout turned healthy slow free-tier reasoning
+  generations into stream errors. Raised to 300s deadline, 120s per-attempt + adapter
+  read timeout (fallback reserve logic unchanged; no tool replay risk introduced).
+- **Verified:** red→green pinned test + 26/26 desktop-gateway suite.
+- **Committed:** `2497229`.
+
+## Final regression at loop close (2026-09-18)
+- Full repo: **778 passed / 33 skipped / 0 failed** (147s).
+- Desktop: build clean, **9/9** Node tests, bundled runtime handshake OK.
+- Open items intentionally left for later sessions: verified live OpenRouter free-model
+  catalog expansion, key-preserving model switching, HF onboarding depth, packaging run.
