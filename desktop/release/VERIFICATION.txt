@@ -1,0 +1,39 @@
+Bucker Desktop 2.0.0 — Windows x64 developer preview (UI redesign build)
+
+Installer: release/Bucker-Desktop-2.0.0-Setup.exe
+Built: 2026-09-18T00:00:47+05:45
+Size: 172,644,256 bytes (164.7 MiB)
+SHA256: 26920f58ea22f2ebd8d7c443023370eae6314f9b57e879df99028b6e35ae9bf8
+
+WHAT IS INSIDE
+- Electron 44.4.1 app: redesigned workspace UI (welcome screen, focused
+  provider setup, collapsible Explorer/activity panels, status bar,
+  readable chat, editor tabs with save state).
+- Bundled runtime (resources/runtime): Python 3.12.10 embeddable,
+  hermes-agent 0.20.5 source, 71 pinned dependencies, desktop gateway.
+- Nothing user-specific: no .env, no credentials, no dev profile.
+
+VERIFIED (packaged payload, dev-free environment)
+- ui-usability.cjs: welcome screen, one-at-a-time provider setup, Escape
+  closes dialog, Ctrl+B explorer toggle, activity panel toggle, no
+  overflow at 1440x920 and 1000x720, zero renderer errors.
+- e2e-editor.cjs: open folder via real dialog stub, browse tree, open
+  hello.py in Monaco, edit, Ctrl+S save confirmed on disk, app restart,
+  content survives restart, status contract intact.
+- bundled-runtime.cjs: bundled Python starts hermes-agent 0.20.5 ACP
+  adapter, initialize handshake OK; gateway auth 401 unauthenticated,
+  200 with token; model catalog lists desktop-auto + connected models.
+  No model calls made (no provider key in test env).
+- Rendered references: ui-welcome-1440.png / ui-welcome-1000.png
+  (packaged app), editor-acceptance.png (editor flow).
+
+KNOWN LIMITATIONS (unchanged)
+- Installer is unsigned. On this machine Device Guard blocks silent
+  install ("blocked by your organization"); run under admin approval or
+  sign the binary. The win-unpacked payload is byte-equivalent and was
+  fully verified.
+- Live provider inference through the UI is still unverified; requires a
+  user-connected key. Tool output rendering is wired but only covered by
+  the scripted ACP peer test.
+- Project tools (git/bash/node) are not bundled; agent terminal work
+  relies on what the user's machine provides.

@@ -105,12 +105,18 @@ def test_builtins_register():
     register_builtins()
     assert set(available()) == {
         "python_test_runner", "noop", "citation_checker", "command",
+        # Multi-language verifiers (parallel workstream): registered builtins.
+        "typescript_test_runner", "rust_test_runner", "go_test_runner",
+        "lint_checker",
     }
 
 
 def test_routing_by_task_type():
     register_builtins()
-    assert for_task_type("code_change") == ("command", "python_test_runner")
+    assert for_task_type("code_change") == (
+        "command", "go_test_runner", "lint_checker", "python_test_runner",
+        "rust_test_runner", "typescript_test_runner",
+    )
     assert for_task_type("demo") == ("noop",)
     assert for_task_type("research") == ("citation_checker",)
 

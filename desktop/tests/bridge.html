@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>bridge-test</title></head>
+<body>
+<div id="result">BRIDGE_PENDING</div>
+<script>
+  (async () => {
+    const el = document.getElementById('result');
+    try {
+      if (!window.desktop || !window.desktop.invoke) { el.textContent = 'BRIDGE_MISSING'; return; }
+      const status = await window.desktop.invoke('status');
+      const unsubscribe = window.desktop.onEvent(e => { window.__lastEvent = e; });
+      if (typeof unsubscribe !== 'function') { el.textContent = 'BRIDGE_EVENT_BAD'; return; }
+      unsubscribe();
+      el.textContent = 'BRIDGE_OK ' + JSON.stringify({ok: status.ok, connected: status.data && status.data.connected, workspace: status.data && status.data.workspace});
+    } catch (e) { el.textContent = 'BRIDGE_ERROR ' + e.message; }
+  })();
+</script>
+</body></html>

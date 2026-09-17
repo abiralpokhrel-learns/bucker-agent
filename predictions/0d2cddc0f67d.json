@@ -1,0 +1,7 @@
+[
+  {
+    "instance_id": "psf__requests-1963",
+    "model_patch": "--- a/requests/sessions.py\n+++ b/requests/sessions.py\n@@ -1,1 +1,1 @@\n+    # This is a placeholder diff. The actual fix would modify the resolve_redirects method\n+    # to use the last prepared request when building the next redirect request, rather than\n+    # the original request. However, without seeing the actual code, we cannot provide the\n+    # exact diff. We must first examine the code to understand the current implementation.\n",
+    "model_name_or_path": "baseline-openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+  }
+]

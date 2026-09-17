@@ -1,0 +1,66 @@
+// Real Electron DOM acceptance, isolated profile. No inference or credentials.
+const {_electron: electron, expect} = require('@playwright/test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+(async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bucker-usability-'));
+  const app = await electron.launch({args:[path.resolve(__dirname, '..')], env:{...process.env, BUCKER_DESKTOP_HOME:path.join(dir,'profile')}, timeout:60000});
+  const errors = [];
+  try {
+    const page = await app.firstWindow();
+    page.on('pageerror', e => errors.push(e.message));
+    await page.locator('.bucker-shell').waitFor();
+    await expect(page.getByRole('complementary', {name:'Bucker assistant'})).toBeVisible();
+    await expect(page.getByRole('textbox', {name:'Message Bucker'})).toBeVisible();
+    assert.ok(!/hermes/i.test(await page.locator('.workspace-body').innerText()));
+    assert.equal(await page.locator('.workspace-pane').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(31, 31, 31)');
+    await page.keyboard.press('Control+Shift+p');
+    const palette = page.getByRole('dialog',{name:'Command palette'});
+    await expect(palette).toBeVisible();
+    await expect(page.getByRole('textbox',{name:'Search commands'})).toBeFocused();
+    await page.getByRole('textbox',{name:'Search commands'}).fill('wrap');
+    await page.keyboard.press('Enter');
+    await expect(palette).toHaveCount(0);
+    await fs.writeFile(path.join(dir,'hello.py'), '# '+ 'long line '.repeat(100)+'\n');
+    await app.evaluate(({dialog},folder)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[folder]});},dir);
+    await page.locator('.workspace-switch').click();
+    await page.locator('.file-row').filter({hasText:'hello.py'}).click();
+    await expect(page.locator('.monaco-editor')).toBeVisible();
+    await expect(page.getByRole('button',{name:'Toggle word wrap',exact:true})).toHaveAttribute('aria-pressed','true');
+    await expect.poll(()=>page.locator('.view-lines .view-line').count()).toBeGreaterThan(2);
+    await page.getByRole('button',{name:'Toggle minimap',exact:true}).click();
+    await expect(page.locator('.monaco-editor .minimap')).toBeVisible();
+    await page.getByRole('button',{name:'Toggle minimap',exact:true}).click();
+    await expect(page.locator('.monaco-editor .minimap')).not.toBeVisible();
+    await page.keyboard.press('Control+Shift+p');
+    await page.getByRole('textbox',{name:'Search commands'}).fill('no-such-command');
+    await expect(palette.getByText('No matching commands.')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(palette).toHaveCount(0);
+    await page.reload();
+    await page.locator('.file-row').filter({hasText:'hello.py'}).click();
+    await expect(page.getByRole('button',{name:'Toggle word wrap',exact:true})).toHaveAttribute('aria-pressed','true');
+    await page.getByRole('button',{name:'Providers',exact:true}).click();
+    const catalog = await page.evaluate(async()=> (await window.desktop.invoke('providers')).data);
+    const hf = catalog.find(p=>p.id==='huggingface');
+    await page.getByRole('button',{name:hf.name,exact:true}).click();
+    assert.deepEqual(await page.locator('.setup-instructions li').allTextContents(),hf.steps);
+    await page.getByRole('searchbox',{name:'Search models'}).fill('not-a-real-model');
+    await expect(page.getByText('No models match your search.',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Clear model search'}).click();
+    assert.deepEqual(await page.locator('#provider-model option').evaluateAll(options=>options.map(o=>o.value)),hf.models.map(m=>m.id));
+    await page.locator('#provider-model').selectOption(hf.models.at(-1).id);
+    await expect(page.locator('.model-details')).toContainText(hf.models.at(-1).context.toLocaleString('en-US'));
+    await page.getByRole('searchbox',{name:'Search models'}).fill(hf.models.at(-1).id.toUpperCase());
+    await expect(page.locator('#provider-model')).toHaveValue(hf.models.at(-1).id);
+    await expect(page.getByRole('button',{name:'Save connection',exact:true})).toBeDisabled();
+    await page.keyboard.press('Escape');
+    assert.deepEqual(errors, []);
+    console.log(JSON.stringify({branding:true,darkModernPalette:true,rendererErrors:errors}));
+  } finally {
+    await app.close();
+    await fs.rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:200});
+  }
+})().catch(e=>{console.error(e);process.exitCode=1;});

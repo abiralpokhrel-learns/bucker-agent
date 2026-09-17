@@ -1,0 +1,30 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { PassThrough } = require('node:stream');
+const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const path = require('node:path');
+
+test('ACP transport handles split UTF-8 lines, responses, events and denial', async () => {
+  const file = path.resolve(__dirname, '../dist/main/acp.js');
+  assert.ok(fs.existsSync(file), 'ACP transport implementation must exist');
+  const { AcpClient } = require(file);
+  const child = new EventEmitter();
+  child.stdout = new PassThrough(); child.stdin = new PassThrough(); child.stderr = new PassThrough();
+  child.kill = () => {};
+  const sent = []; child.stdin.on('data', b => sent.push(JSON.parse(b.toString())));
+  const client = new AcpClient(child);
+  const updates = []; client.on('update', u => updates.push(u));
+  const request = client.request('initialize', {protocolVersion: 1});
+  const wire = Buffer.from(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{text:'你好'}})+'\n');
+  child.stdout.write(wire.subarray(0, wire.length-4)); child.stdout.write(wire.subarray(wire.length-4));
+  child.stdout.write(JSON.stringify({jsonrpc:'2.0',id:sent[0].id,result:{protocolVersion:1}})+'\n');
+  assert.deepEqual(await request, {protocolVersion:1});
+  assert.equal(updates[0].text, '你好');
+  child.stdout.write(JSON.stringify({jsonrpc:'2.0',id:99,method:'session/request_permission',params:{options:[]}})+'\n');
+  client.respondPermission(99, null);
+  assert.deepEqual(sent.at(-1).result, {outcome:{outcome:'cancelled'}});
+  const pending = client.request('session/new', {});
+  child.emit('exit', 1);
+  await assert.rejects(pending, /agent stopped|exited/);
+});

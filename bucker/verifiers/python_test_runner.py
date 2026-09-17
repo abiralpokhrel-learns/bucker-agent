@@ -246,6 +246,17 @@ def register_builtins() -> None:
     # go/cargo test...). Same lazy-import discipline.
     from bucker.verifiers.command_runner import register_command_verifier
     register_command_verifier()
+    
+    # New verifiers
+    from bucker.verifiers.typescript_verifier import TypeScriptVerifier
+    register(TypeScriptVerifier())
+    from bucker.verifiers.rust_verifier import RustVerifier
+    register(RustVerifier())
+    from bucker.verifiers.go_verifier import GoVerifier
+    register(GoVerifier())
+    from bucker.verifiers.lint_verifier import LintVerifier
+    register(LintVerifier())
+
     _BUILTINS_REGISTERED = True
 
 

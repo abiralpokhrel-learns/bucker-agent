@@ -77,11 +77,33 @@ app = FastAPI(
     description="Durable, verified agent execution. Nothing is trusted until verified.",
 )
 
+from fastapi.middleware.cors import CORSMiddleware
+
 from bucker.api.gateway import health_router  # noqa: E402
 from bucker.api.gateway import router as gateway_router  # noqa: E402
+from bucker.api.ws import ws_router  # noqa: E402
+from bucker.api.terminal import terminal_router  # noqa: E402
+from bucker.api.files import files_router  # noqa: E402
+from bucker.api.chat import chat_router  # noqa: E402
+from bucker.api.onboarding import onboarding_router  # noqa: E402
+from bucker.api.routers.export import export_router  # noqa: E402
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(gateway_router)
 app.include_router(health_router)
+app.include_router(ws_router)
+app.include_router(terminal_router)
+app.include_router(files_router)
+app.include_router(chat_router)
+app.include_router(onboarding_router)
+app.include_router(export_router)
 
 security = HTTPBearer(auto_error=False)
 

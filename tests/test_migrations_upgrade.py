@@ -21,8 +21,16 @@ from pathlib import Path
 import asyncpg
 import pytest
 
+# Reuse conftest's TEST_DSN instead of re-reading os.environ here: conftest is
+# imported before any test module, so its value reflects the real shell
+# environment. Reading the env at THIS module's import time races collection
+# order — if an earlier-collected module imports bucker.config, dotenv loads
+# the repo .env and a database that is not running turns these into
+# connection-refused errors instead of skips (observed 2026-09-17).
+from tests.conftest import TEST_DSN
+
 pytestmark = pytest.mark.skipif(
-    not __import__("os").environ.get("BUCKER_TEST_DATABASE_URL"),
+    not TEST_DSN,
     reason="set BUCKER_TEST_DATABASE_URL to run migration tests",
 )
 
