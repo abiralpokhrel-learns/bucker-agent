@@ -22,3 +22,14 @@
 - Remaining known gaps (unstarted): user-visible "Hermes" strings in
   `bucker/frontend/src/desktop/DesktopApp.tsx` / `desktop/src/main/acp.ts`, single-model-per-provider
   catalog, 90s gateway deadline vs slow free models, HF onboarding depth.
+
+## Cycle 3 — white-label agent-facing strings (2026-09-18)
+- Renderer was already white-labeled (Bucker branding, VS Code-style theme, command
+  palette, Ctrl+S/B, wrap/minimap); the remaining leaks were main-process strings shown
+  in toasts when the agent crashes, loses stdin, fails a request/session setup, or after
+  provider changes ("reconnect Hermes"), plus "Choose Hermes" style guidance.
+- All now say "agent"/Bucker; `hermesPath`, `HERMES_HOME`, and the bundled
+  `hermes-agent` ACP identity stay internal (regression test asserts both sides).
+- **Verified:** desktop build clean; 9/9 Node tests (branding, ACP transport, session,
+  runtime, workspace, bundle); bundled runtime handshake still reports hermes-agent 0.20.5.
+- **Committed:** `03352a4`.
