@@ -68,7 +68,7 @@ class DesktopAdapter(OpenAICompatAdapter):
     """Keep shared wire translation, but use only explicit credentials."""
 
     def __init__(self, connection):
-        super().__init__(timeout_s=60)
+        super().__init__(timeout_s=120)
         self.name = connection.provider
         self.base_url = connection.base_url
         self._credential = connection.api_key
@@ -173,8 +173,10 @@ def create_app(*, token: str, connections: list[dict]) -> FastAPI:
         circuits=CircuitRegistry(threshold=3, open_for_s=30),
         quota=QuotaManager(),
         policy="free_only",
-        deadline_s=90,
-        timeout_s=60,
+        # Free tiers are slow (reasoning models can think for minutes); a
+        # tight deadline turns a healthy slow generation into a stream error.
+        deadline_s=300,
+        timeout_s=120,
         max_retries=0,
     )
 

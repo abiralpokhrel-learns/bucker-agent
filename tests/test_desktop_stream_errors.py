@@ -54,3 +54,9 @@ def test_inline_error_and_truncated_stream_are_not_success(body):
         assert "private-key-and-provider-body" not in response.text
         assert not any(c.get("finish_reason") for f in frames for c in f.get("choices", []))
         assert client.get("/usage", headers=AUTH).json()["errors"] == 1
+
+def test_gateway_deadline_allows_long_free_generations():
+    app = gateway().create_app(token=TOKEN, connections=[connection()])
+    engine = app.state.engine
+    assert engine.deadline_s == 300, f"deadline {engine.deadline_s}s kills slow free-model streams"
+    assert engine.timeout_s == 120, f"per-attempt timeout {engine.timeout_s}s too tight for reasoning models"
