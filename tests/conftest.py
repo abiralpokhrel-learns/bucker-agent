@@ -42,6 +42,7 @@ def make_event(
     *,
     task_id: UUID | None = None,
     tool_output_ref: str | None = None,
+    idempotency_key: str | None = None,
 ) -> Event:
     """Build an Event without touching a database."""
     return Event(
@@ -52,6 +53,7 @@ def make_event(
         schema_version=1,
         created_at=datetime(2026, 7, 27, 12, 0, 0, tzinfo=UTC),
         tool_output_ref=tool_output_ref,
+        idempotency_key=idempotency_key,
     )
 
 

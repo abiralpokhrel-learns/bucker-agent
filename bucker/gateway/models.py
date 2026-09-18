@@ -126,6 +126,15 @@ class InferenceResponse:
     #: stores it content-addressed for replay). NOT part of the API contract
     #: — never returned to callers.
     raw: dict | None = None
+    #: Time to first token/first forwarded delta in ms (monotonic clock).
+    #: None for non-streaming completions (no first-token boundary) and
+    #: for replays. Needed to measure free-tier queue tail separately
+    #: from total generation time.
+    ttft_ms: int | None = None
+    #: Provider-reported prompt-cache hits, when the provider reports them
+    #: (OpenRouter/DeepSeek ``prompt_tokens_details.cached_tokens``).
+    #: None = provider did not report (unknown, never 0).
+    cached_tokens: int | None = None
 
 
 # --------------------------------------------------------------------------
@@ -150,13 +159,49 @@ def stream_event(type_: str, **data: Any) -> dict:
     return {"type": type_, **data}
 
 
-def usage(prompt_tokens: int, completion_tokens: int, cost_usd: float | None) -> dict:
+def usage(
+    prompt_tokens: int,
+    completion_tokens: int,
+    cost_usd: float | None,
+    *,
+    cached_tokens: int | None = None,
+    ttft_ms: int | None = None,
+    reported: bool = True,
+) -> dict:
+    """Canonical usage dict. ``cached_tokens``/``ttft_ms`` are None when the
+    provider did not report them (unknown, never fabricated as 0)."""
     return {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
         "cost_usd": cost_usd,
+        "cached_tokens": cached_tokens,
+        "cache_hit": bool(cached_tokens) if cached_tokens is not None else None,
+        "ttft_ms": ttft_ms,
+        "reported": reported,
     }
+
+
+def extract_cached_tokens(provider_usage: dict | None) -> int | None:
+    """Pull prompt-cache hits out of a provider usage block, or None.
+
+    OpenRouter/DeepSeek/OpenAI report this in different shapes; unknown
+    shape means unknown (None), never 0 — a missing field is not evidence
+    of a miss.
+    """
+    if not isinstance(provider_usage, dict):
+        return None
+    details = provider_usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        for key in ("cached_tokens", "cached_tokens_details"):
+            val = details.get(key)
+            if isinstance(val, int):
+                return val
+    for key in ("prompt_cache_hit_tokens", "cached_tokens"):
+        val = provider_usage.get(key)
+        if isinstance(val, int):
+            return val
+    return None
 
 
 # --------------------------------------------------------------------------

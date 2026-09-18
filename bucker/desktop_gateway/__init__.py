@@ -118,6 +118,11 @@ class DesktopAdapter(OpenAICompatAdapter):
                 timeout=60,
                 trust_env=False,
                 follow_redirects=False,
+                limits=httpx.Limits(
+                    max_connections=20,
+                    max_keepalive_connections=10,
+                    keepalive_expiry=30.0,
+                ),
             )
         return self._client
 

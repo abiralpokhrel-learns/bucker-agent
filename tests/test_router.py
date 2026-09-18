@@ -379,3 +379,48 @@ async def test_fallback_recording_notes_the_serving_model(tmp_path):
     # The routing envelope explains WHY the fallback happened.
     assert record["routing"]["reason"] == "fallback_after_failure"
     assert record["routing"]["selected"] == {"provider": "b", "model": "b/fallback-a"}
+
+
+async def test_stream_complete_replays_recorded_text_as_deltas(router):
+    """Streaming must not break replay: recorded mode yields the stored text
+    as deltas then the same final response complete() would return."""
+    messages = [{"role": "user", "content": "hi"}]
+    record(router, messages, "hello streamed", purpose="planner")
+
+    events = [ev async for ev in router.stream_complete(messages, purpose="planner")]
+    assert events[0] == {"type": "text_delta", "text": "hello streamed"}
+    assert events[-1]["type"] == "final"
+    assert events[-1]["response"].text == "hello streamed"
+    assert events[-1]["response"].from_recording is True
+
+    # Same digest as complete(): streamed and non-streamed share replay.
+    direct = await router.complete(messages, purpose="planner")
+    assert direct.text == events[-1]["response"].text
+
+
+async def test_stream_complete_live_forwards_deltas_before_final(tmp_path):
+    """Live streaming forwards text immediately with TTFT on the final."""
+    from bucker.core.blob import BlobStore
+
+    sim = SimulatedProvider("sim")
+    router = _live_router(
+        tmp_path, {"sim": sim}, model="sim/live-model",
+    )
+    messages = [{"role": "user", "content": "hi"}]
+    seen_deltas: list[str] = []
+    final = None
+    async for ev in router.stream_complete(messages, purpose="planner"):
+        if ev["type"] == "text_delta":
+            seen_deltas.append(ev["text"])
+        elif ev["type"] == "final":
+            final = ev["response"]
+    assert "".join(seen_deltas) == final.text
+    assert "hello from sim" in final.text
+    # Same logical call replays via complete() afterwards.
+    replay = await ModelRouter(
+        BlobStore(tmp_path / "blobs"),
+        model="sim/live-model",
+        mode="recorded",
+        recordings=router.recordings,
+    ).complete(messages, purpose="planner")
+    assert replay.text == final.text

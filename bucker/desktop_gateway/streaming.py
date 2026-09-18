@@ -21,6 +21,8 @@ async def stream_frames(engine, req, decision, ledger, include_usage=False):
     served = None
     seen_tools = set()
     pending_finish = None
+    ttft_ms: int | None = None
+    stream_start = time.monotonic()
 
     def chunk(choices, **extra):
         return frame(
@@ -44,6 +46,8 @@ async def stream_frames(engine, req, decision, ledger, include_usage=False):
             async for event in engine.stream(req, decision):
                 kind = event["type"]
                 if kind in ("text_delta", "tool_call_delta"):
+                    if ttft_ms is None:
+                        ttft_ms = int((time.monotonic() - stream_start) * 1000)
                     # Failed attempts are appended before the next candidate.
                     served = decision.candidates[len(decision.attempts)]
                     if kind == "text_delta":
@@ -69,13 +73,32 @@ async def stream_frames(engine, req, decision, ledger, include_usage=False):
                             "completion_tokens": event.get("completion_tokens", 0),
                             "cost_usd": None,
                         }
+                        if event.get("cached_tokens") is not None:
+                            usage["cached_tokens"] = event.get("cached_tokens")
+                        if event.get("ttft_ms") is not None:
+                            usage["ttft_ms"] = event.get("ttft_ms")
+                        elif ttft_ms is not None:
+                            usage["ttft_ms"] = ttft_ms
                         usage["total_tokens"] = (
                             usage["prompt_tokens"] + usage["completion_tokens"]
                         )
                     else:
                         usage = None
                 elif kind == "error":
-                    error = public_error(event["error_type"], decision.attempts)
+                    # Interrupted mid-flight (partial tool args already sent):
+                    # the engine guarantees no fallback happened and no finish
+                    # was emitted. Surface the honest interrupted message so
+                    # the UI shows "attempt didn't finish" instead of silently
+                    # continuing or claiming a retry started.
+                    if event.get("interrupted"):
+                        error = public_error(event["error_type"], decision.attempts)
+                        # Prefer the engine's honest message over the generic
+                        # provider hint when a partial proposal was discarded.
+                        honest = event.get("honest_message")
+                        if honest:
+                            error.safe = honest
+                    else:
+                        error = public_error(event["error_type"], decision.attempts)
                     break
     except TimeoutError:
         error = GatewayTimeoutError("stream deadline exceeded")

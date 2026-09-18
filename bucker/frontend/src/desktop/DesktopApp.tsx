@@ -150,6 +150,12 @@ export const DesktopApp: React.FC = () => {
     } catch (e:any) { setError(e.message); } finally { setBusyLocal(false); }
   };
   const cancel = async () => { try { await call('cancel'); } catch (e:any) { setError(e.message); } };
+  const closeTab = (path: string) => {
+    const tab = tabs.find(t => t.path === path); if (!tab) return;
+    if (tab.dirty) { setError('Save this file before closing its tab.'); return; }
+    setTabs(ts => ts.filter(x => x.path !== path));
+    if (activePath === path) setActivePath(tabs.find(x => x.path !== path)?.path ?? null);
+  };
   const answerPermission = async (optionId: string | null) => {
     if (!permission) return;
     try { await call('permission', {id: permission.id, optionId}); } catch (e:any) { setError(e.message); }
@@ -191,7 +197,7 @@ export const DesktopApp: React.FC = () => {
         <main className="workspace-pane">
           <div className="editor-tabs" role="tablist" aria-label="Open files">
             {!tabs.length && <div className="welcome-tab"><Code2 size={15}/> Getting started</div>}
-            {tabs.map(t=><div key={t.path} className={`editor-tab ${activePath===t.path?'active':''}`}><button role="tab" aria-selected={activePath===t.path} title={t.path} onClick={()=>setActivePath(t.path)}><FileIcon size={14}/><span>{t.name}</span>{t.dirty && <span className="dirty-dot" aria-label="Unsaved changes"/>}</button><button className="tab-close" aria-label={`Close ${t.name}`} onClick={()=>{if(t.dirty){setError('Save this file before closing its tab.');return;}setTabs(ts=>ts.filter(x=>x.path!==t.path));if(activePath===t.path)setActivePath(tabs.find(x=>x.path!==t.path)?.path??null);}}><X size={13}/></button></div>)}
+            {tabs.map(t=><div key={t.path} className={`editor-tab ${activePath===t.path?'active':''}`}><button role="tab" aria-selected={activePath===t.path} title={t.path} onClick={()=>setActivePath(t.path)}><FileIcon size={14}/><span>{t.name}</span>{t.dirty && <span className="dirty-dot" aria-label="Unsaved changes"/>}</button><button className="tab-close" aria-label={`Close ${t.name}`} onClick={()=>closeTab(t.path)}><X size={13}/></button></div>)}
           </div>
           {activeTab && <div className="file-breadcrumb"><span>{activeTab.path}</span><div className="editor-actions"><button className="editor-option" aria-label="Toggle word wrap" title="Toggle word wrap" aria-pressed={wordWrap} onClick={()=>setWordWrap(v=>!v)}>Wrap</button><button className="editor-option" aria-label="Toggle minimap" title="Toggle minimap" aria-pressed={minimap} onClick={()=>setMinimap(v=>!v)}>Minimap</button><button className="save-button" disabled={!activeTab.dirty} onClick={saveActive}><Save size={13}/>{activeTab.dirty?'Save changes':'Saved'}<kbd>Ctrl S</kbd></button></div></div>}
           <div className="editor-surface">
@@ -221,11 +227,13 @@ export const DesktopApp: React.FC = () => {
       <footer className="statusbar"><span><span className={`status-dot ${status?.connected?'online':''}`}/>{status?.connected?'Agent connected':'Editor ready'}</span><span className="status-safety"><ShieldAlert size={12}/>Local execution · not sandboxed</span><div className="toolbar-spacer"/><span>{tabs.filter(t=>t.dirty).length?`${tabs.filter(t=>t.dirty).length} unsaved`:'All changes saved'}</span>{activeTab && <><span>UTF-8</span><span>{activeTab.language}</span></>}</footer>
       {paletteOpen && <CommandPalette onClose={()=>setPaletteOpen(false)} commands={[
         {id:'save', label:'File: Save active file', shortcut:'Ctrl S', disabled:!activeTab?.dirty, run:()=>void saveActive()},
+        {id:'close-tab', label:'File: Close active tab', disabled:!activeTab, run:()=>{ if(activeTab) closeTab(activeTab.path); }},
         {id:'folder', label:'File: Open folder', run:()=>void openFolder()},
         {id:'wrap', label:`Editor: Toggle word wrap (${wordWrap?'on':'off'})`, run:()=>setWordWrap(v=>!v)},
         {id:'minimap', label:`Editor: Toggle minimap (${minimap?'on':'off'})`, run:()=>setMinimap(v=>!v)},
         {id:'explorer', label:'View: Toggle Explorer', shortcut:'Ctrl B', run:()=>setExplorerOpen(v=>!v)},
         {id:'activity', label:'View: Toggle agent activity', run:()=>setActivityOpen(v=>!v)},
+        {id:'stop', label:'Agent: Stop agent', disabled:!busy, run:()=>void cancel()},
         {id:'providers', label:'Preferences: AI providers', run:()=>setSettingsOpen(true)},
         {id:'chat', label:'Agent: Focus message composer', run:()=>composerRef.current?.focus()},
       ]}/>}

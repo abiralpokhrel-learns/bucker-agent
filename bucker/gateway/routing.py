@@ -112,6 +112,7 @@ class RouterEngine:
         max_retries: int | None = None,
         circuit_threshold: int | None = None,
         circuit_open_for_s: float | None = None,
+        ttft_timeout_s: float | None = None,
     ) -> None:
         self.registry = registry or ModelRegistry.default()
         self.adapters = adapters or default_adapters()
@@ -123,6 +124,11 @@ class RouterEngine:
         self.policy = policy or settings.gateway_policy
         self.deadline_s = deadline_s or settings.gateway_deadline_s
         self.timeout_s = timeout_s or settings.gateway_timeout_s
+        self.ttft_timeout_s = (
+            settings.gateway_ttft_timeout_s
+            if ttft_timeout_s is None
+            else ttft_timeout_s
+        )
         self.max_retries = (
             settings.gateway_max_retries if max_retries is None else max_retries
         )
@@ -312,8 +318,11 @@ class RouterEngine:
         deadline = time.monotonic() + (req.deadline_s or self.deadline_s)
         started = time.monotonic()
         forwarded = False
+        ttft_ms: int | None = None
         tool_calls: list[dict] | None = None
         prompt_tokens = completion_tokens = 0
+        cached_tokens: int | None = None
+        usage_reported = False
         candidates = self._candidate_models(decision)
 
         for idx, model in enumerate(candidates):
@@ -332,24 +341,36 @@ class RouterEngine:
                 })
                 break
             adapter = self.adapters[model.provider]
+            attempt_start = time.monotonic()
             try:
-                async for ev in adapter.stream(req, model.provider_model_id):
-                    if time.monotonic() > deadline:
-                        raise GatewayTimeoutError(
-                            "stream exceeded request deadline",
-                            provider=model.provider, model=model.canonical_id,
-                        )
+                async for ev in self._stream_with_ttft_deadline(
+                    adapter.stream(req, model.provider_model_id),
+                    attempt_start=attempt_start,
+                    deadline=deadline,
+                    model=model,
+                ):
                     if ev["type"] in ("text_delta", "tool_call_delta"):
-                        forwarded = True
+                        if not forwarded:
+                            forwarded = True
+                            ttft_ms = int((time.monotonic() - started) * 1000)
                     elif ev["type"] == "finish":
                         tool_calls = ev.get("tool_calls")
                     elif ev["type"] == "usage":
                         prompt_tokens = ev.get("prompt_tokens", 0)
                         completion_tokens = ev.get("completion_tokens", 0)
-                        cost_usd = self._usage_dict(
-                            model, prompt_tokens, completion_tokens
-                        )["cost_usd"]
-                        yield {**ev, "cost_usd": cost_usd}
+                        if ev.get("cached_tokens") is not None:
+                            cached_tokens = ev.get("cached_tokens")
+                        usage_reported = bool(ev.get("reported", True))
+                        usage_d = self._usage_dict(
+                            model, prompt_tokens, completion_tokens,
+                            cached_tokens=cached_tokens,
+                        )
+                        yield {
+                            **ev,
+                            "cost_usd": usage_d["cost_usd"],
+                            "ttft_ms": ttft_ms,
+                            "reported": usage_reported,
+                        }
                         continue
                     yield ev
             except GatewayError as err:
@@ -366,13 +387,30 @@ class RouterEngine:
                 )
                 if forwarded:
                     # Cannot switch mid-stream without corrupting the
-                    # caller's partial response (spec §19): surface the
-                    # error and stop.
+                    # caller's partial response (spec §19 + interrupted-stream
+                    # recovery R3/R4): discard the partial proposal, NEVER
+                    # re-fire a partial tool call, and surface an honest
+                    # interrupted signal — not a silent continuation and not
+                    # a "retrying" claim (no retry started).
                     await self._record_usage(
                         req, model, None, "error", err.category,
                         len(decision.attempts), 0,
+                        ttft_ms=ttft_ms,
                     )
-                    yield stream_event("error", error_type=err.category, message=err.safe)
+                    yield stream_event(
+                        "error",
+                        error_type=err.category,
+                        message=err.safe,
+                        interrupted=True,
+                        forwarded=True,
+                        discard_partial=True,
+                        honest_message=(
+                            "This attempt was interrupted. Pending tool "
+                            "proposals were not run. Earlier actions may "
+                            "have completed; review activity before retrying."
+                        ),
+                        ttft_ms=ttft_ms,
+                    )
                     return
                 continue
 
@@ -394,24 +432,32 @@ class RouterEngine:
             decision.selected = model.canonical_id
             latency_ms = int((time.monotonic() - started) * 1000)
             self.circuits.record_success(model.key, latency_ms)
-            usage = self._usage_dict(model, prompt_tokens, completion_tokens)
+            usage = self._usage_dict(
+                model, prompt_tokens, completion_tokens,
+                cached_tokens=cached_tokens, ttft_ms=ttft_ms,
+            )
             await self._record_usage(
                 req, model, usage, "success", None,
                 len(decision.attempts) + 1, latency_ms,
+                ttft_ms=ttft_ms,
             )
             log.info(
-                "stream completed request_id=%s provider=%s model=%s latency_ms=%d",
-                req.request_id, model.provider, model.canonical_id, latency_ms,
+                "stream completed request_id=%s provider=%s model=%s latency_ms=%d ttft_ms=%s",
+                req.request_id, model.provider, model.canonical_id, latency_ms, ttft_ms,
             )
             return
 
         await self._record_usage(
             req, None, None, "error", "all_providers_failed_error",
             len(decision.attempts) or 1, 0,
+            ttft_ms=ttft_ms,
         )
         yield stream_event(
             "error", error_type="all_providers_failed_error",
             message="all providers failed",
+            interrupted=False,
+            forwarded=forwarded,
+            ttft_ms=ttft_ms,
         )
 
     # ==================================================================
@@ -573,7 +619,12 @@ class RouterEngine:
 
     @staticmethod
     def _usage_dict(
-        model: GatewayModel, prompt_tokens: int, completion_tokens: int
+        model: GatewayModel,
+        prompt_tokens: int,
+        completion_tokens: int,
+        *,
+        cached_tokens: int | None = None,
+        ttft_ms: int | None = None,
     ) -> dict:
         cost: float | None = None
         if not model.price_unknown():
@@ -586,6 +637,11 @@ class RouterEngine:
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
             "cost_usd": cost,
+            # None = provider did not report (unknown, never 0). Lets the
+            # dashboard distinguish "cache miss" from "no cache data".
+            "cached_tokens": cached_tokens,
+            "cache_hit": bool(cached_tokens) if cached_tokens is not None else None,
+            "ttft_ms": ttft_ms,
         }
 
     def _build_response(
@@ -596,6 +652,14 @@ class RouterEngine:
         latency_ms: int,
         decision: RoutingDecision,
     ) -> InferenceResponse:
+        cached = raw.usage.get("cached_tokens")
+        usage = self._usage_dict(
+            model,
+            raw.usage.get("prompt_tokens", 0),
+            raw.usage.get("completion_tokens", 0),
+            cached_tokens=cached,
+            ttft_ms=None,  # non-streaming has no first-token boundary
+        )
         return InferenceResponse(
             request_id=req.request_id,
             model=model.canonical_id,
@@ -603,15 +667,13 @@ class RouterEngine:
             content=raw.text,
             tool_calls=raw.tool_calls,
             finish_reason=raw.finish_reason,
-            usage=self._usage_dict(
-                model,
-                raw.usage.get("prompt_tokens", 0),
-                raw.usage.get("completion_tokens", 0),
-            ),
+            usage=usage,
             latency_ms=latency_ms,
             attempts=len(decision.attempts) + 1,
             from_fallback=len(decision.attempts) > 0,
             raw=raw.raw or {"text": raw.text},
+            ttft_ms=None,
+            cached_tokens=cached,
         )
 
     async def _record_usage(
@@ -623,6 +685,8 @@ class RouterEngine:
         error_type: str | None,
         attempt_count: int,
         latency_ms: int,
+        *,
+        ttft_ms: int | None = None,
     ) -> None:
         try:
             await self.quota.record_usage(
@@ -638,6 +702,83 @@ class RouterEngine:
                 outcome=outcome,
                 error_type=error_type,
                 attempt_count=attempt_count,
+                ttft_ms=ttft_ms if ttft_ms is not None else (usage_ or {}).get("ttft_ms"),
+                cached_tokens=(usage_ or {}).get("cached_tokens"),
             )
         except Exception:  # noqa: BLE001 — usage recording never breaks a request
             log.warning("usage recording failed", exc_info=True)
+
+    async def _stream_with_ttft_deadline(
+        self,
+        stream: AsyncIterator[dict],
+        *,
+        attempt_start: float,
+        deadline: float,
+        model: GatewayModel,
+    ) -> AsyncIterator[dict]:
+        """Yield stream events, enforcing deadline + TTFT cutoff.
+
+        TTFT cutoff: while no delta has been forwarded, each wait for the
+        next event is bounded by the TTFT budget (and the request deadline).
+        A queued free-tier candidate that stays silent past the budget raises
+        GatewayTimeoutError BEFORE anything reaches the caller, so the engine
+        can safely fall back to the next candidate. After the first delta the
+        TTFT budget no longer applies — the request deadline governs, and a
+        mid-flight failure must NOT trigger fallback (caller owns the partial).
+        """
+        it = stream.__aiter__()
+        first_delta_seen = False
+        while True:
+            now = time.monotonic()
+            if now > deadline:
+                raise GatewayTimeoutError(
+                    "stream exceeded request deadline",
+                    provider=model.provider, model=model.canonical_id,
+                )
+            try:
+                if not first_delta_seen:
+                    ttft_deadline = attempt_start + self.ttft_timeout_s
+                    wait_budget = min(ttft_deadline, deadline) - now
+                    if wait_budget <= 0:
+                        raise GatewayTimeoutError(
+                            f"{model.provider} produced no output within "
+                            f"{self.ttft_timeout_s:.0f}s TTFT budget (queued?)",
+                            provider=model.provider, model=model.canonical_id,
+                        )
+                    try:
+                        ev = await asyncio.wait_for(it.__anext__(), timeout=wait_budget)
+                    except TimeoutError:  # noqa: UP041 — asyncio.TimeoutError
+                        raise GatewayTimeoutError(
+                            f"{model.provider} produced no output within "
+                            f"{self.ttft_timeout_s:.0f}s TTFT budget (queued?)",
+                            provider=model.provider, model=model.canonical_id,
+                        ) from None
+                else:
+                    # Post-TTFT: bound only by the request deadline. A silent gap
+                    # here surfaces as a deadline error (mid-flight → interrupted,
+                    # no fallback) rather than a TTFT fallback.
+                    remaining = deadline - now
+                    try:
+                        ev = await asyncio.wait_for(
+                            it.__anext__(), timeout=max(0.05, remaining)
+                        )
+                    except TimeoutError:  # noqa: UP041
+                        raise GatewayTimeoutError(
+                            "stream exceeded request deadline",
+                            provider=model.provider, model=model.canonical_id,
+                        ) from None
+            except StopAsyncIteration:
+                return
+            if ev is None:
+                continue
+            if ev.get("type") in ("text_delta", "tool_call_delta"):
+                first_delta_seen = True
+            try:
+                yield ev
+            except GeneratorExit:
+                # Caller closed the stream (client disconnect / cancel):
+                # stop pulling the provider without converting to an error.
+                return
+            # Clean provider end raises StopAsyncIteration on the next
+            # __anext__ — loop back around to catch it and return.
+            continue

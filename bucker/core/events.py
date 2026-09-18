@@ -37,6 +37,13 @@ class EventType(StrEnum):
     # --- execution (steps 17, 19) ----------------------------------------
     STEP_STARTED = "StepStarted"
     STEP_COMPLETED = "StepCompleted"
+    # Recorded BEFORE a tool side effect runs (not after): a swap or crash
+    # between "tool ran" and "result recorded" must be distinguishable from
+    # "tool never ran". The completion event carries the result; this one
+    # carries the intent + the completion's idempotency key, so whoever picks
+    # up next checks "did this already run" instead of guessing from a
+    # transcript. Payload: tool, attempt, completion_key.
+    TOOL_CALL_STARTED = "ToolCallStarted"
     TOOL_CALL_COMPLETED = "ToolCallCompleted"
     MODEL_CALL_COMPLETED = "ModelCallCompleted"
     # Self-critique loop: the critic's verdict on a proposed diff

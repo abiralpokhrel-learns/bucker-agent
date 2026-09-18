@@ -175,6 +175,15 @@ class Settings:
     enable_critique: bool = field(
         default_factory=lambda: _env("BUCKER_ENABLE_CRITIQUE", "1") == "1"
     )
+    #: Selective self-consistency for weak models: when the first critic says
+    #: "needs_fix" on a weak-tier model (free/local/unknown), run ONE more
+    #: critic pass to confirm before paying for a repair round. A disagreement
+    #: (second says "ok") skips the repair — the critic is advisory, and a
+    #: false-positive repair wastes more than it saves. Strong paid models
+    #: skip this; their first verdict is trusted. Disable with 0.
+    enable_critique_confirm: bool = field(
+        default_factory=lambda: _env("BUCKER_ENABLE_CRITIQUE_CONFIRM", "1") == "1"
+    )
     max_tokens_critic: int = field(
         default_factory=lambda: int(_env("BUCKER_MAX_TOKENS_CRITIC", "600"))
     )
@@ -275,6 +284,25 @@ class Settings:
         default_factory=lambda: float(
             _env("BUCKER_GATEWAY_CIRCUIT_OPEN_FOR_S", "30")
         )
+    )
+    #: Time-to-first-token budget per streaming candidate. Free hosted tiers
+    #: queue: the connection is open but no SSE arrives for 10-30s. Without
+    #: a TTFT cutoff one queued candidate eats the whole request deadline
+    #: and starves the fallback chain. When no delta has been forwarded
+    #: within this budget the engine abandons the candidate and tries the
+    #: next one (safe: nothing reached the caller yet). Once the first
+    #: delta is forwarded the TTFT budget no longer applies — the request
+    #: deadline governs the rest, and mid-flight failures NEVER switch
+    #: candidates (interrupted-stream recovery spec).
+    gateway_ttft_timeout_s: float = field(
+        default_factory=lambda: float(_env("BUCKER_GATEWAY_TTFT_S", "20"))
+    )
+    #: Model id used for the self-critique pass. Empty = same model as the
+    #: worker call. Set this to a fast model (local Ollama or Haiku) to cut
+    #: task latency: critique is 1 extra sequential call, and on a slow
+    #: free primary it triples end-to-end time for little quality gain.
+    critique_model: str = field(
+        default_factory=lambda: _env("BUCKER_CRITIQUE_MODEL", "")
     )
 
 

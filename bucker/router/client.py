@@ -68,6 +68,11 @@ class ModelResponse:
     #: mode replays them byte-for-byte like text.
     tool_calls: list[dict] | None = None
     finish_reason: str = "stop"
+    #: Time to first token (streaming) or None for non-stream/replay.
+    #: Monotonic ms from request start to first forwarded delta.
+    ttft_ms: int | None = None
+    #: Provider-reported prompt-cache hits (None = not reported).
+    cached_tokens: int | None = None
 
 
 def _redact_messages(messages: list[dict]) -> list[dict]:
@@ -261,6 +266,183 @@ class ModelRouter:
             tools=tools, tool_choice=tool_choice,
         )
 
+    async def stream_complete(
+        self,
+        messages: list[dict],
+        *,
+        purpose: str,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+    ):
+        """Streaming completion: yield text deltas as they arrive.
+
+        Time-to-first-visible-token drops even when total generation time
+        does not — the caller can render the first delta immediately
+        instead of waiting for the full completion.
+
+        Yields ``{"type": "text_delta", "text": ...}`` chunks, then a final
+        ``{"type": "final", "response": ModelResponse}``. The final response
+        carries the same recording envelope as :meth:`complete` (same
+        request digest), so replay stays byte-identical whether the
+        original call streamed or not. Recorded mode replays the stored
+        text in one chunk — deterministic, no network.
+
+        Mid-stream failure yields ``{"type": "error", ...}`` with the
+        engine's honest fields (``interrupted``, ``forwarded``,
+        ``discard_partial``) and NO final — mirroring the gateway rule that
+        fallback only happens before the first forwarded delta. A caller
+        that already rendered deltas must discard the partial output and
+        retry the whole turn on another model; resuming a half-generated
+        response elsewhere is incoherent. Nothing is recorded on this path,
+        so the retry replays cleanly.
+        """
+        if max_tokens is None:
+            max_tokens = self.max_tokens_for(purpose)
+
+        digest = request_digest(self.model, messages, temperature, max_tokens)
+        request_ref = self.blobs.put_json(
+            {
+                "model": self.model,
+                "messages": _redact_messages(messages),
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "purpose": purpose,
+                "stream": True,
+            }
+        )
+
+        if self.mode == "recorded":
+            resp = self._from_recording(digest, request_ref)
+            if resp.text:
+                yield {"type": "text_delta", "text": resp.text}
+            yield {"type": "final", "response": resp}
+            return
+
+        # Live: forward deltas immediately; accumulate for the recording.
+        import time as _time
+
+        request = InferenceRequest(
+            purpose=purpose,
+            messages=messages,
+            model=self.model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            tool_choice=tool_choice,
+            stream=True,
+        )
+        started = _time.monotonic()
+        try:
+            decision = await self.engine.plan(request)
+        except GatewayError as exc:
+            raise ModelCallFailed(f"all models in the chain failed: {exc}") from exc
+
+        chunks: list[str] = []
+        tool_calls: list[dict] | None = None
+        finish_reason = "stop"
+        ttft_ms: int | None = None
+        async for ev in self.engine.stream(request, decision):
+            kind = ev.get("type")
+            if kind == "text_delta":
+                if ttft_ms is None:
+                    ttft_ms = int((_time.monotonic() - started) * 1000)
+                chunks.append(ev.get("text", ""))
+                yield {"type": "text_delta", "text": ev.get("text", "")}
+            elif kind == "tool_call_delta":
+                if ttft_ms is None:
+                    ttft_ms = int((_time.monotonic() - started) * 1000)
+                yield ev
+            elif kind == "finish":
+                tool_calls = ev.get("tool_calls")
+                finish_reason = ev.get("finish_reason") or "stop"
+            elif kind == "usage":
+                # Final event: build + archive the same envelope as _live
+                # so a streamed call replays identically via complete().
+                text = "".join(chunks)
+                latency_ms = int((_time.monotonic() - started) * 1000)
+                selected = decision.selected or self.model
+                usage = {
+                    "prompt_tokens": ev.get("prompt_tokens", 0),
+                    "completion_tokens": ev.get("completion_tokens", 0),
+                    "total_tokens": ev.get("prompt_tokens", 0)
+                    + ev.get("completion_tokens", 0),
+                    "cost_usd": ev.get("cost_usd"),
+                    "cached_tokens": ev.get("cached_tokens"),
+                    "ttft_ms": ev.get("ttft_ms", ttft_ms),
+                }
+                raw_ref = self.blobs.put_json(
+                    _redact_raw({"text": text, "streamed": True})
+                )
+                cost_usd = usage.get("cost_usd")
+                cost_unknown = cost_usd is None
+                try:
+                    served_model = selected
+                    self.recordings.put(
+                        digest,
+                        {
+                            "model": self.model,
+                            "model_served": served_model,
+                            "purpose": purpose,
+                            "text": text,
+                            "raw_ref": raw_ref,
+                            "request_ref": request_ref,
+                            "cost_usd": cost_usd,
+                            "cost_unknown": cost_unknown,
+                            "latency_ms": latency_ms,
+                            "ttft_ms": ttft_ms,
+                            "usage": usage,
+                            "finish_reason": finish_reason,
+                            "tool_calls": tool_calls,
+                            "routing": {
+                                "policy": decision.policy,
+                                "config_version": self.engine.registry.config_version(),
+                                "candidates": list(decision.candidates),
+                                "selected": {"model": served_model},
+                                "reason": "stream",
+                                "fallback_attempts": list(decision.attempts),
+                            },
+                        },
+                    )
+                except Exception:
+                    pass
+                resp = ModelResponse(
+                    text=text,
+                    model=served_model,
+                    cost_usd=cost_usd,
+                    cost_unknown=cost_unknown,
+                    latency_ms=latency_ms,
+                    raw_ref=raw_ref,
+                    request_ref=request_ref,
+                    from_recording=False,
+                    usage=usage,
+                    tool_calls=tool_calls,
+                    finish_reason=finish_reason,
+                    ttft_ms=ttft_ms,
+                    cached_tokens=usage.get("cached_tokens"),
+                )
+                yield {"type": "final", "response": resp}
+                return
+            elif kind == "error":
+                # Honest interruption: forward the engine's fields so the
+                # caller knows partial output (if any) must be discarded.
+                # No recording is written — the retried whole turn records
+                # under its own digest when it succeeds.
+                forwarded = bool(chunks) or ev.get("forwarded", False)
+                yield {
+                    "type": "error",
+                    "error_type": ev.get("error_type"),
+                    "message": ev.get("message")
+                    or ev.get("honest_message")
+                    or "stream interrupted",
+                    "interrupted": ev.get("interrupted", True),
+                    "forwarded": forwarded,
+                    "discard_partial": True,
+                    "ttft_ms": ttft_ms,
+                }
+                return
+
     # ------------------------------------------------------------ replay --
     def _from_recording(self, digest: str, request_ref: str) -> ModelResponse:
         if not self.recordings.has(digest):
@@ -294,6 +476,8 @@ class ModelRouter:
             cost_unknown=bool(record.get("cost_unknown", False)),
             tool_calls=record.get("tool_calls"),
             finish_reason=record.get("finish_reason", "stop"),
+            ttft_ms=record.get("ttft_ms"),
+            cached_tokens=(record.get("usage") or {}).get("cached_tokens"),
         )
 
     # -------------------------------------------------------------- live --
@@ -359,6 +543,7 @@ class ModelRouter:
                 "cost_usd": cost_usd,
                 "cost_unknown": cost_unknown,
                 "latency_ms": response.latency_ms,
+                "ttft_ms": response.ttft_ms,
                 "usage": response.usage,
                 "finish_reason": response.finish_reason,
                 "tool_calls": response.tool_calls,
@@ -406,4 +591,6 @@ class ModelRouter:
             usage=response.usage,
             tool_calls=response.tool_calls,
             finish_reason=response.finish_reason,
+            ttft_ms=response.ttft_ms,
+            cached_tokens=response.cached_tokens,
         )

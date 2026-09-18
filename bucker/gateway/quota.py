@@ -50,6 +50,8 @@ class QuotaManager:
         outcome: str,                # "success" | "error"
         error_type: str | None = None,
         attempt_count: int = 1,
+        ttft_ms: int | None = None,
+        cached_tokens: int | None = None,
     ) -> None:
         """Append one request to the ledger. Never raises."""
         try:
@@ -61,9 +63,10 @@ class QuotaManager:
                 INSERT INTO gateway_usage (
                     request_id, tenant_id, purpose, provider, model,
                     prompt_tokens, completion_tokens, total_tokens,
-                    cost_usd, latency_ms, outcome, error_type, attempt_count
+                    cost_usd, latency_ms, outcome, error_type, attempt_count,
+                    ttft_ms, cached_tokens
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                 """,
                 request_id,
                 tenant_id,
@@ -78,6 +81,8 @@ class QuotaManager:
                 outcome,
                 error_type,
                 attempt_count,
+                ttft_ms,
+                cached_tokens,
             )
         except Exception:  # noqa: BLE001 — quota must never break the call
             log.warning("quota record failed for %s/%s", provider, model, exc_info=True)

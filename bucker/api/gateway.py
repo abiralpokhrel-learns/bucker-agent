@@ -397,21 +397,33 @@ async def _stream_sse(
                 )
             elif ev["type"] == "usage":
                 usage_final = ev
-                yield chunk(
-                    [],
-                    usage={
-                        "prompt_tokens": ev.get("prompt_tokens", 0),
-                        "completion_tokens": ev.get("completion_tokens", 0),
-                        "total_tokens": (
-                            ev.get("prompt_tokens", 0)
-                            + ev.get("completion_tokens", 0)
-                        ),
-                    },
-                )
+                usage_payload: dict[str, Any] = {
+                    "prompt_tokens": ev.get("prompt_tokens", 0),
+                    "completion_tokens": ev.get("completion_tokens", 0),
+                    "total_tokens": (
+                        ev.get("prompt_tokens", 0)
+                        + ev.get("completion_tokens", 0)
+                    ),
+                }
+                # Instrumentation for #4 (measure before changing routing):
+                # surface TTFT + cache-hit where the provider reported them.
+                if ev.get("ttft_ms") is not None:
+                    usage_payload["ttft_ms"] = ev.get("ttft_ms")
+                if ev.get("cached_tokens") is not None:
+                    usage_payload["cached_tokens"] = ev.get("cached_tokens")
+                yield chunk([], usage=usage_payload)
             elif ev["type"] == "error":
-                yield chunk(
-                    [{"index": 0, "delta": {}, "finish_reason": "error"}]
-                )
+                # Interrupted mid-flight: partial output was already sent and
+                # discarded server-side (no fallback, no tool re-fire). Tell
+                # the client honestly instead of a bare finish=error.
+                if ev.get("interrupted"):
+                    yield chunk(
+                        [{"index": 0, "delta": {}, "finish_reason": "interrupted"}]
+                    )
+                else:
+                    yield chunk(
+                        [{"index": 0, "delta": {}, "finish_reason": "error"}]
+                    )
     finally:
         latency_ms = int((time.monotonic() - started) * 1000)
         await _audit_telemetry(

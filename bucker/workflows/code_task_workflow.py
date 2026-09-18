@@ -38,6 +38,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from bucker.activities.planner import plan_task
     from bucker.core.budget import pre_spend_decision
+    from bucker.core.context import compact_retry_objective
     from bucker.retry import Action
 
 from temporalio.exceptions import ActivityError
@@ -317,10 +318,13 @@ class CodeTaskWorkflow:
                 if strategy.get("next_model"):
                     self._current_model = strategy["next_model"]
             else:
+                # Compacted retry: stable base objective (cacheable prefix) +
+                # latest failure only. Accumulating every past failure grows
+                # an uncached tail each attempt and defeats prefix caching.
                 task_dict = {
                     **task_dict,
-                    "objective": (
-                        f"{task_dict['objective']}\n\n{decision['failure_context']}"
+                    "objective": compact_retry_objective(
+                        task_dict["objective"], decision["failure_context"]
                     ),
                 }
 

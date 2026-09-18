@@ -117,11 +117,18 @@ def chunk_objective(objective: str, diagnostics: list[str]) -> str:
 
     When the verifier reports 'ImportError' or 'no tests collected',
     the task is likely too ambiguous. Chunking adds structure.
+
+    Uses the compacted base objective (not the accumulated retry tail) so
+    chunking also bounds tokens — one verifiable thing per turn, which is
+    what weak models need most.
     """
+    from bucker.core.context import base_objective
+
     diag_text = "; ".join(diagnostics[-3:]) if diagnostics else "unknown failure"
+    base = base_objective(objective).strip() or objective.strip()
 
     return (
-        f"{objective}\n\n"
+        f"{base}\n\n"
         f"The previous attempt failed with: {diag_text}\n\n"
         f"Break this down into smaller steps:\n"
         f"1. First, identify what specific change is needed by reading the "

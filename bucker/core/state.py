@@ -45,6 +45,11 @@ def initial_state() -> State:
         "last_verification": None,
         "last_event_id": 0,
         "halted_reason": None,
+        # Tools started but not yet completed, keyed by the COMPLETION event's
+        # idempotency key (carried in the start payload as completion_key).
+        # Non-empty means the last turn was interrupted mid-tool: whoever
+        # continues must retry the whole turn, never assume the result.
+        "pending_tools": {},
     }
 
 
@@ -90,9 +95,23 @@ def _step_completed(s: State, e: Event) -> None:
         s["steps_completed"].append(name)
 
 
+def _tool_call_started(s: State, e: Event) -> None:
+    key = e.payload.get("completion_key") or e.idempotency_key or f"tool:{e.id}"
+    s["pending_tools"][key] = {
+        "tool": e.payload.get("tool"),
+        "attempt": e.payload.get("attempt"),
+        "status": "in_flight",
+        "started_event_id": e.id,
+    }
+
+
 def _tool_call_completed(s: State, e: Event) -> None:
     if e.tool_output_ref:
         s["artifacts"][f"tool:{e.id}"] = e.tool_output_ref
+    # The matching start (if any) is now confirmed — a later handoff must not
+    # report this tool as pending.
+    if e.idempotency_key and e.idempotency_key in s["pending_tools"]:
+        del s["pending_tools"][e.idempotency_key]
 
 
 def _model_call_completed(s: State, e: Event) -> None:
@@ -235,6 +254,7 @@ HANDLERS: dict[str, Handler] = {
     EventType.SCHEMA_VALIDATION_FAILED: _schema_validation_failed,
     EventType.STEP_STARTED: _step_started,
     EventType.STEP_COMPLETED: _step_completed,
+    EventType.TOOL_CALL_STARTED: _tool_call_started,
     EventType.TOOL_CALL_COMPLETED: _tool_call_completed,
     EventType.MODEL_CALL_COMPLETED: _model_call_completed,
     EventType.MODEL_CALL_FAILED: _model_call_failed,

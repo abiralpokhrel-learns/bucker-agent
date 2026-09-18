@@ -31,6 +31,8 @@ async def record_model_call(
     cost_usd: float | None,   # None = unknown (pricing metadata missing)
     purpose: str | None = None,
     usage: dict | None = None,
+    ttft_ms: int | None = None,
+    cached_tokens: int | None = None,
 ) -> None:
     """Record a model call in the telemetry table.
 
@@ -38,22 +40,48 @@ async def record_model_call(
     router already captures it; storing it here is what lets the dashboard
     answer "how many tokens did this model burn".
 
+    ``ttft_ms`` / ``cached_tokens`` are None when unknown (replay, non-stream,
+    or provider did not report). They fall back to ``usage`` values when the
+    caller passes them through ``usage`` only.
+
     Call this AFTER the corresponding ModelCallCompleted event is appended.
     """
     usage = usage or {}
-    await conn.execute(
-        """
-        INSERT INTO telemetry (
-            event_id, task_id, model_used, latency_ms, cost_usd,
-            purpose, prompt_tokens, completion_tokens, total_tokens
+    if ttft_ms is None:
+        ttft_ms = usage.get("ttft_ms")
+    if cached_tokens is None:
+        cached_tokens = usage.get("cached_tokens")
+    try:
+        await conn.execute(
+            """
+            INSERT INTO telemetry (
+                event_id, task_id, model_used, latency_ms, cost_usd,
+                purpose, prompt_tokens, completion_tokens, total_tokens,
+                ttft_ms, cached_tokens
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (event_id) DO NOTHING
+            """,
+            event_id, task_id, model, latency_ms, cost_usd, purpose,
+            usage.get("prompt_tokens"), usage.get("completion_tokens"),
+            usage.get("total_tokens"), ttft_ms, cached_tokens,
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (event_id) DO NOTHING
-        """,
-        event_id, task_id, model, latency_ms, cost_usd, purpose,
-        usage.get("prompt_tokens"), usage.get("completion_tokens"),
-        usage.get("total_tokens"),
-    )
+    except Exception:
+        # Old DB without migration 007 (no ttft/cached columns): fall back
+        # to the pre-instrumentation shape rather than dropping telemetry.
+        await conn.execute(
+            """
+            INSERT INTO telemetry (
+                event_id, task_id, model_used, latency_ms, cost_usd,
+                purpose, prompt_tokens, completion_tokens, total_tokens
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (event_id) DO NOTHING
+            """,
+            event_id, task_id, model, latency_ms, cost_usd, purpose,
+            usage.get("prompt_tokens"), usage.get("completion_tokens"),
+            usage.get("total_tokens"),
+        )
 
 
 async def record_tool_call(

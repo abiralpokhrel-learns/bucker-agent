@@ -224,7 +224,7 @@ async def test_critique_ok_does_not_repair(sandbox):
 
 
 async def test_critique_needs_fix_triggers_one_repair_round(sandbox):
-    """Critic finds issues -> one bounded repair round replaces the diff."""
+    """Critic finds issues -> confirm (weak model) -> one bounded repair."""
     flawed = json.dumps({**PRODUCED, "diff": "--- a/wrong.py\\n+++ b/wrong.py\\n"})
     fixed = json.dumps({**PRODUCED, "diff": "--- a/calc.py\\n+++ b/calc.py\\n@@ -1 +1 @@\\n"})
     router = FakeRouter(
@@ -240,7 +240,11 @@ async def test_critique_needs_fix_triggers_one_repair_round(sandbox):
     assert attempt.critique_issues == ["diff targets wrong file"]
     assert attempt.repaired is True
     assert outcome.result.diff != PRODUCED["diff"]  # the repair replaced it
-    assert router.purposes == ["worker", "critic", "worker"]
+    # Weak model (FakeRouter "fake-model" is unknown tier): selective
+    # self-consistency runs a confirm pass before the repair.
+    assert router.purposes == ["worker", "critic", "critic", "worker"]
+    assert attempt.critique_confirm_verdict == "needs_fix"
+    assert attempt.critique_disagreement is False
 
 
 async def test_critique_parse_failure_skips_repair(sandbox):
@@ -348,3 +352,87 @@ def test_prompt_contains_the_contract(sandbox):
     prompt = build_prompt(TASK, "")
     assert "python_test_runner" in prompt
     assert TASK.objective in prompt
+
+
+# --------------------------------- selective self-consistency (weak only) --
+def test_is_weak_model_tiers():
+    from bucker.worker_agent import is_weak_model, should_confirm_critique
+
+    assert is_weak_model("openrouter/nvidia/nemotron-3-super-120b-a12b:free") is True
+    assert is_weak_model("ollama/qwen2.5-coder:7b") is True
+    assert is_weak_model("fake-model") is True
+    assert is_weak_model("openrouter/anthropic/claude-sonnet-4.5") is False
+    assert should_confirm_critique("fake-model") is True
+    assert should_confirm_critique(
+        "openrouter/anthropic/claude-sonnet-4.5"
+    ) is False
+
+
+async def test_critique_disagreement_skips_repair(sandbox):
+    """First critic flags, second clears -> no repair, verifier decides."""
+
+    class DisagreeingRouter(FakeRouter):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._critic_calls = 0
+
+        async def complete(self, messages, *, purpose, **kwargs):
+            if purpose == "critic":
+                self._critic_calls += 1
+                self.calls.append(messages)
+                self.purposes.append(purpose)
+                if self._critic_calls == 1:
+                    text = '{"verdict": "needs_fix", "issues": ["maybe wrong"], "fix_hint": ""}'
+                else:
+                    text = '{"verdict": "ok", "issues": [], "fix_hint": ""}'
+                return ModelResponse(
+                    text=text, model=self.model, cost_usd=0.0, latency_ms=5,
+                    raw_ref="sha256:" + "0" * 64,
+                    request_ref="sha256:" + "1" * 64, from_recording=True,
+                )
+            return await super().complete(messages, purpose=purpose, **kwargs)
+
+    router = DisagreeingRouter([json.dumps(PRODUCED)])
+    outcome = await execute_task(router, TASK, sandbox, apply=False)
+    attempt = outcome.attempts[0]
+    assert attempt.critique_disagreement is True
+    assert attempt.critique_verdict == "ok"
+    assert attempt.critique_confirm_verdict == "ok"
+    assert attempt.repaired is False
+    assert outcome.result.diff == PRODUCED["diff"]
+    assert router.purposes == ["worker", "critic", "critic"]
+
+
+async def test_strong_model_skips_confirm(sandbox):
+    """Paid tier trusts the first critic verdict — no second pass."""
+    flawed = json.dumps({**PRODUCED, "diff": "--- a/wrong.py\\n+++ b/wrong.py\\n"})
+    fixed = json.dumps({**PRODUCED, "diff": "--- a/calc.py\\n+++ b/calc.py\\n@@ -1 +1 @@\\n"})
+    router = FakeRouter(
+        [flawed, fixed],
+        critic_text='{"verdict": "needs_fix", "issues": ["x"], "fix_hint": ""}',
+    )
+    # FakeRouter defaults to an unknown-tier id; promote to paid for this case.
+    router.model = "openrouter/anthropic/claude-sonnet-4.5"
+    outcome = await execute_task(router, TASK, sandbox, apply=False)
+    assert outcome.attempts[0].critique_confirm_verdict is None
+    assert outcome.attempts[0].repaired is True
+    assert router.purposes == ["worker", "critic", "worker"]
+
+
+async def test_critique_confirm_disabled_via_config(sandbox):
+    """BUCKER_ENABLE_CRITIQUE_CONFIRM=0 restores single-critic behaviour."""
+    from bucker.config import settings
+
+    object.__setattr__(settings, "enable_critique_confirm", False)
+    try:
+        flawed = json.dumps({**PRODUCED, "diff": "--- a/w.py\\n+++ b/w.py\\n"})
+        fixed = json.dumps({**PRODUCED, "diff": "--- a/c.py\\n+++ b/c.py\\n"})
+        router = FakeRouter(
+            [flawed, fixed],
+            critic_text='{"verdict": "needs_fix", "issues": ["x"], "fix_hint": ""}',
+        )
+        outcome = await execute_task(router, TASK, sandbox, apply=False)
+        assert outcome.attempts[0].critique_confirm_verdict is None
+        assert router.purposes == ["worker", "critic", "worker"]
+    finally:
+        object.__setattr__(settings, "enable_critique_confirm", True)

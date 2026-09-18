@@ -63,9 +63,61 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int,
 
     sandbox = _sandbox_for(task_id)
     await sandbox.start()
+    # Idempotency across crash/swap retries: the pre_apply hook records
+    # TOOL_CALL_STARTED *before* the side effect and, when this exact apply
+    # already completed on an earlier try, returns the prior result so the
+    # tool call is never duplicated. apply_skipped tracks that path so the
+    # COMPLETED event + telemetry below are not recorded twice.
+    completion_key = f"{task_id}:work-{attempt}-apply"
+    started_key = f"{task_id}:work-{attempt}-apply-started"
+    apply_skipped = False
+
+    async def _pre_apply(result):
+        nonlocal apply_skipped
+        await store.append(
+            tid,
+            EventType.TOOL_CALL_STARTED,
+            {
+                "tool": "apply_diff",
+                "attempt": attempt,
+                "completion_key": completion_key,
+            },
+            idempotency_key=started_key,
+        )
+        prior = None
+        try:
+            stream = await store.read_stream(tid)
+        except Exception:
+            return None
+        for e in stream:
+            if (
+                str(e.event_type) == str(EventType.TOOL_CALL_COMPLETED)
+                and e.idempotency_key == completion_key
+            ):
+                prior = e
+                break
+        if prior is None:
+            return None
+        try:
+            blob = get_blobs().get_json(prior.tool_output_ref) if prior.tool_output_ref else {}
+        except Exception:
+            blob = {}
+        from bucker.sandbox.runtime import ExecResult
+
+        apply_skipped = True
+        return ExecResult(
+            command="apply_diff",
+            exit_code=int((prior.payload or {}).get("exit_code", 0)),
+            stdout=str((blob or {}).get("stdout", "")),
+            stderr=str((blob or {}).get("stderr", "")),
+            duration_ms=0,
+            timed_out=False,
+            secret_findings=[],
+        )
+
     try:
         try:
-            outcome = await execute_task(router, task, sandbox)
+            outcome = await execute_task(router, task, sandbox, pre_apply=_pre_apply)
         except WorkFailed as exc:
             for i, att in enumerate(exc.attempts):
                 await store.append(
@@ -105,7 +157,8 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int,
                 )
 
             # Self-critique loop: the critic verdict + any extra model calls
-            # (critic pass, repair round) get their own events + telemetry.
+            # (critic pass, optional confirm pass on weak models, repair
+            # round) get their own events + telemetry.
             if att.critique_verdict is not None:
                 await store.append(
                     tid,
@@ -115,14 +168,24 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int,
                         "verdict": att.critique_verdict,
                         "issues": att.critique_issues,
                         "repaired": att.repaired,
+                        "confirm_verdict": getattr(
+                            att, "critique_confirm_verdict", None
+                        ),
+                        "disagreement": bool(
+                            getattr(att, "critique_disagreement", False)
+                        ),
                     },
                     tool_output_ref=(
                         att.extra_calls[0].raw_ref if att.extra_calls else None
                     ),
                     idempotency_key=f"{task_id}:work-{attempt}-critique-{i + 1}",
                 )
+            # extra_calls = [critic(, confirm)?, repair?]. The repair (worker
+            # call) is last and only present when repaired; everything before
+            # it is a critic pass.
+            n_critic_calls = len(att.extra_calls) - (1 if att.repaired else 0)
             for j, call in enumerate(att.extra_calls):
-                call_purpose = "critic" if j == 0 else "worker"  # repair is a worker call
+                call_purpose = "critic" if j < n_critic_calls else "worker"
                 call_event = await store.append(
                     tid,
                     EventType.MODEL_CALL_COMPLETED,
@@ -151,7 +214,7 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int,
                         usage=call.usage,
                     )
 
-        if outcome.applied is not None:
+        if outcome.applied is not None and not apply_skipped:
             tool_event = await store.append(
                 tid,
                 EventType.TOOL_CALL_COMPLETED,
@@ -164,7 +227,7 @@ async def run_worker(task_id: str, task_dict: dict, attempt: int,
                     "stdout": outcome.applied.stdout,
                     "stderr": outcome.applied.stderr,
                 }),
-                idempotency_key=f"{task_id}:work-{attempt}-apply",
+                idempotency_key=completion_key,
             )
             async with store._pool.acquire() as conn:
                 await record_tool_call(
@@ -400,11 +463,14 @@ async def choose_adaptive_strategy(history_dict: dict) -> dict:
     result: dict = {"strategy": str(strategy)}
 
     if strategy is Strategy.DEFAULT:
-        # Fixed-retry behaviour: carry the verifier's diagnostics forward.
+        # Fixed-retry behaviour: stable base + latest failure only (same
+        # compaction as the non-adaptive path — accumulation defeats cache).
+        from bucker.core.context import compact_retry_objective
+
         failure_context = history_dict.get("failure_context", "")
-        result["next_objective"] = (
-            f"{objective}\n\n{failure_context}".strip() if failure_context else objective
-        )
+        result["next_objective"] = compact_retry_objective(
+            objective, failure_context
+        ) if failure_context else objective
     elif strategy is Strategy.CHUNK:
         result["next_objective"] = chunk_objective(objective, history.diagnostics)
     elif strategy is Strategy.CLARIFY:

@@ -44,7 +44,12 @@ from bucker.gateway.errors import (
     QuotaExceededError,
     RateLimitError,
 )
-from bucker.gateway.models import InferenceRequest, stream_event
+from bucker.gateway.models import InferenceRequest, extract_cached_tokens, stream_event
+
+
+def _extract_cached_tokens(provider_usage: dict | None) -> int | None:
+    """Local alias — keeps RawCompletion usage enrichment in one place."""
+    return extract_cached_tokens(provider_usage)
 
 
 @dataclass(slots=True)
@@ -122,10 +127,30 @@ class OpenAICompatAdapter(ProviderAdapter):
             headers = {"Content-Type": "application/json"}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
+            # OpenRouter routes free-tier traffic across endpoints; identifying
+            # headers keep the request on the fast, correctly-attributed path
+            # and avoid generic-client throttling. Harmless for other providers.
+            if self.name == "openrouter":
+                headers.setdefault("HTTP-Referer", "https://github.com/bucker-agent")
+                headers.setdefault("X-Title", "bucker-agent")
+            # Reused connection pool: free-model tasks make 3-5 sequential
+            # calls (planner → worker → critique → repair). Without keepalive
+            # every call pays a fresh TLS handshake (200-500ms). Limits are
+            # explicit so a burst of parallel tasks cannot exhaust sockets.
+            limits = httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=30.0,
+            )
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 headers=headers,
                 timeout=httpx.Timeout(self._timeout_s),
+                limits=limits,
+                # Never follow a redirect off the allowlisted base URL with
+                # a stored key (provider-catalog domain constraint): a
+                # manifest may update metadata, never reroute credentials.
+                follow_redirects=False,
             )
         return self._client
 
@@ -196,16 +221,23 @@ class OpenAICompatAdapter(ProviderAdapter):
         # single source of truth for this guard — see RouterEngine._attempt
         # — so every adapter and the simulated provider behave identically.)
         usage_ = data.get("usage") or {}
+        cached = _extract_cached_tokens(usage_)
+        usage_out: dict[str, Any] = {
+            "prompt_tokens": usage_.get("prompt_tokens", 0),
+            "completion_tokens": usage_.get("completion_tokens", 0),
+        }
+        # Preserve provider-reported prompt-cache hits (None = not reported,
+        # never 0). Dropped silently before — the dashboard could not answer
+        # "cache-hit or real miss" for free-tier latency analysis.
+        if cached is not None:
+            usage_out["cached_tokens"] = cached
         return RawCompletion(
             text=text,
             tool_calls=tool_calls,
             finish_reason=(
                 choice.get("finish_reason") or ("tool_calls" if tool_calls else "stop")
             ),
-            usage={
-                "prompt_tokens": usage_.get("prompt_tokens", 0),
-                "completion_tokens": usage_.get("completion_tokens", 0),
-            },
+            usage=usage_out,
             raw=data,
         )
 
@@ -213,9 +245,15 @@ class OpenAICompatAdapter(ProviderAdapter):
     async def stream(self, req: InferenceRequest, model_id: str) -> AsyncIterator[dict]:
         payload = self._payload(req, model_id)
         payload["stream"] = True
+        # OpenRouter only sends token usage on streams when asked; without
+        # this the gateway records 0 tokens and NULL cost for every streamed
+        # call, which poisons cost/latency analysis. Harmless elsewhere.
+        payload.setdefault("stream_options", {"include_usage": True})
         text_parts: list[str] = []
         tool_acc: dict[int, dict[str, str]] = {}
         prompt_tokens = completion_tokens = 0
+        cached_tokens: int | None = None
+        usage_reported = False
         finish_reason: str | None = None
 
         try:
@@ -258,6 +296,12 @@ class OpenAICompatAdapter(ProviderAdapter):
                     if usage_:
                         prompt_tokens = usage_.get("prompt_tokens", 0)
                         completion_tokens = usage_.get("completion_tokens", 0)
+                        hit = _extract_cached_tokens(usage_)
+                        if hit is not None:
+                            cached_tokens = hit
+                        # Any usage block counts as reported, even all-zero:
+                        # the provider answered the token question.
+                        usage_reported = True
         except httpx.TimeoutException as exc:
             raise GatewayTimeoutError(
                 f"{self.name} stream timed out", provider=self.name, model=model_id
@@ -289,9 +333,14 @@ class OpenAICompatAdapter(ProviderAdapter):
             )
         else:
             yield stream_event("finish", finish_reason=finish_reason or "stop", tool_calls=None)
-        yield stream_event(
-            "usage", prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
-        )
+        usage_ev: dict[str, Any] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "reported": usage_reported,
+        }
+        if cached_tokens is not None:
+            usage_ev["cached_tokens"] = cached_tokens
+        yield stream_event("usage", **usage_ev)
 
     @staticmethod
     def _normalize_chunk(

@@ -66,6 +66,10 @@ class WorkAttempt:
     critique_issues: list[str] = field(default_factory=list)
     repaired: bool = False                     # True when a repair round ran
     extra_calls: list[ModelResponse] = field(default_factory=list)
+    # Selective self-consistency (weak models only): second critic verdict
+    # when a confirm pass ran, plus whether the two critics disagreed.
+    critique_confirm_verdict: str | None = None
+    critique_disagreement: bool = False
 
     @property
     def ok(self) -> bool:
@@ -256,13 +260,57 @@ def _parse_critique(raw_text: str) -> tuple[dict | None, list[str]]:
     }, []
 
 
+def is_weak_model(model_id: str | None) -> bool:
+    """True for models that need MORE verification, not less.
+
+    Weak = free hosted tier, local small model, or unknown id. A weak model
+    made faster is still wrong at the same rate — skipping the critic to
+    save a round trip just moves the failure to the verifier (or worse,
+    past it). Strong = paid tier only.
+    """
+    try:
+        from bucker.models import tier_of
+
+        return tier_of(model_id or "") in ("free", "local", "unknown")
+    except Exception:
+        return True
+
+
+def should_confirm_critique(model_id: str | None) -> bool:
+    """Selective self-consistency: confirm a needs_fix before repairing.
+
+    Only for weak models and only when the first critic already flagged an
+    issue — never on every step (it would double cost/latency). Strong
+    models trust the first verdict.
+    """
+    return bool(settings.enable_critique_confirm) and is_weak_model(model_id)
+
+
 async def _critique(
     router: ModelRouter, task: Task, workspace_view: str, diff: str
 ) -> Critique | None:
     """Run the critic. Returns None when the critique cannot be parsed —
-    a bad critique must never block the task, only skip the repair round."""
+    a bad critique must never block the task, only skip the repair round.
+
+    Latency fast-path: when BUCKER_CRITIQUE_MODEL names a fast model (local
+    Ollama, Haiku), the critique runs there instead of on the slow free
+    primary. Critique is a 600-token classification — it does not need the
+    strongest coder, and on a queued free tier it saves a full 20-50s
+    sequential call per task.
+    """
     prompt = build_critic_prompt(task, workspace_view, diff)
-    response = await router.complete(
+    critic_router = router
+    if settings.critique_model:
+        try:
+            critic_router = ModelRouter(
+                blobs=router.blobs,
+                model=settings.critique_model,
+                mode=router.mode,
+                recordings=router.recordings,
+            )
+        except Exception:
+            critic_router = router
+    response = await critic_router.complete(
         [{"role": "user", "content": prompt}],
         purpose="critic",
     )
@@ -304,11 +352,20 @@ async def execute_task(
     *,
     max_attempts: int = 2,
     apply: bool = True,
+    pre_apply=None,
 ) -> WorkOutcome:
     """Run one task. Returns an unverified result — the verifier decides truth.
 
     ``apply`` writes the diff into the sandbox workspace so a verifier can run
     against real files. It is applied inside the container, never on the host.
+
+    ``pre_apply`` is an optional ``async (result) -> ExecResult | None`` hook
+    the caller supplies when it owns an event log (the pipeline activity
+    does; unit tests do not). It runs BEFORE the side effect: the activity
+    records ``ToolCallStarted`` there and returns a prior ``ExecResult`` when
+    this exact apply already completed on an earlier try (crash/swap between
+    "tool ran" and "result recorded"). A non-None return skips the duplicate
+    side effect. Without the hook the worker behaves exactly as before.
     """
     workspace_view = build_workspace_view(sandbox, task.files)
     messages = [{"role": "user", "content": build_prompt(task, workspace_view)}]
@@ -331,6 +388,12 @@ async def execute_task(
             # critique skips the repair round — the safety net must never
             # sink the task it protects. The extra model calls are recorded
             # for cost attribution.
+            #
+            # Weak-model rule: the critic runs MORE on weak models, not less.
+            # The global flag still disables everything, but when enabled a
+            # weak worker gets a selective second opinion ONLY after a
+            # needs_fix (self-consistency where the critic flagged
+            # disagreement-risk, never on every step).
             if (
                 settings.enable_critique
                 and result.produced_work
@@ -344,7 +407,25 @@ async def execute_task(
                         attempt.extra_calls.append(critique.response)
                         attempt.critique_verdict = critique.verdict
                         attempt.critique_issues = critique.issues
-                        if critique.wants_repair:
+                        if critique.wants_repair and should_confirm_critique(
+                            getattr(router, "model", "")
+                        ):
+                            confirm = await _critique(
+                                router, task, workspace_view, result.diff
+                            )
+                            if confirm is not None:
+                                attempt.extra_calls.append(confirm.response)
+                                attempt.critique_confirm_verdict = confirm.verdict
+                                if confirm.verdict == "ok":
+                                    # Disagreement: first flagged, second
+                                    # cleared. Skip the repair — a
+                                    # false-positive repair wastes more than
+                                    # it saves, and the verifier still has
+                                    # the final word.
+                                    attempt.critique_disagreement = True
+                                    attempt.critique_verdict = "ok"
+                                    critique = None
+                        if critique is not None and critique.wants_repair:
                             repaired, _repair_errors, repair_response = await _repair(
                                 router, task, critique, response.text
                             )
@@ -363,9 +444,20 @@ async def execute_task(
                 # verifier should see, not something to hide or retry blindly.
                 # files_touched hints the target file when the model forgot
                 # the ---/+++ headers (ensure_diff_headers in the sandbox).
-                applied = await sandbox.apply_diff(
-                    result.diff or "", files=result.files_touched
-                )
+                #
+                # Idempotency: the pre_apply hook (when the caller owns an
+                # event log) records intent BEFORE the side effect and returns
+                # the prior result when this apply already completed — so a
+                # retry after a crash/swap never duplicates the tool call.
+                prior = None
+                if pre_apply is not None:
+                    prior = await pre_apply(result)
+                if prior is not None:
+                    applied = prior
+                else:
+                    applied = await sandbox.apply_diff(
+                        result.diff or "", files=result.files_touched
+                    )
             return WorkOutcome(result=result, attempts=attempts, applied=applied)
 
         if attempt_no < max_attempts:

@@ -206,10 +206,12 @@ async def run_code_task(
                 if strategy.get("next_model"):
                     current_model = strategy["next_model"]
         else:
+            from bucker.core.context import compact_retry_objective
+
             task_dict = {
                 **task_dict,
-                "objective": (
-                    f"{task_dict['objective']}\n\n{decision['failure_context']}"
+                "objective": compact_retry_objective(
+                    task_dict["objective"], decision["failure_context"]
                 ),
             }
 
