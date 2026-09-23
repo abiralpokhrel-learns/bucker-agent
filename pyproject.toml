@@ -89,8 +89,8 @@ line-length = 96
 target-version = "py311"
 # Vendored/generated trees shipped with the desktop app are not first-party
 # code and are not formatted or reviewed under this project's lint rules.
+# (Generated outputs stay out via the global excludes below.)
 extend-exclude = [
-    "desktop/core",
     "desktop/build",
     "desktop/release",
 ]

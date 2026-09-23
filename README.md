@@ -109,5 +109,6 @@ Database-dependent tests require `BUCKER_TEST_DATABASE_URL`; otherwise they skip
 
 Bucker is [Apache-2.0](LICENSE). The desktop harness uses
 [Hermes Agent](https://github.com/NousResearch/hermes-agent); its MIT license and
-third-party notices are retained. [OmniRoute](https://github.com/diegosouzapw/OmniRoute)
-is an upstream reference checkout, not the desktop runtime gateway.
+third-party notices are retained. Model catalog and provider-visibility design
+were inspired by [OmniRoute](https://github.com/diegosouzapw/OmniRoute); no code
+from it is included in this repository.
