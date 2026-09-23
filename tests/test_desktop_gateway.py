@@ -214,7 +214,10 @@ def test_completion_tools_and_429_fallback_are_recorded():
         assert entry["fallback_attempts"][0]["error_type"] == "rate_limit_error"
         assert entry["usage"]["total_tokens"] == 10
         assert "test-provider-secret" not in json.dumps(ledger)
+    # groq gets one retry (429 is retryable) before the engine falls back
+    # to the next candidate.
     assert [url for url, _ in calls] == [
+        "https://api.groq.com/openai/v1/chat/completions",
         "https://api.groq.com/openai/v1/chat/completions",
         "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     ]

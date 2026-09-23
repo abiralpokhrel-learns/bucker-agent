@@ -112,10 +112,23 @@ class DesktopAdapter(OpenAICompatAdapter):
 
     def _client_for(self):
         if self._client is None:
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            # Identify the agent to OpenRouter: keeps free-tier traffic on
+            # the fast, correctly-attributed path instead of generic-client
+            # throttling (same headers the shared adapter sends). Harmless
+            # for other providers.
+            if self.name == "openrouter":
+                headers["HTTP-Referer"] = "https://github.com/bucker-agent"
+                headers["X-Title"] = "bucker-agent"
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=60,
+                headers=headers,
+                # Match the engine's declared per-attempt budget (120s): a
+                # 60s read timeout aborted healthy free-model generations
+                # that legitimately take longer than a minute before the
+                # non-streaming response arrives, surfacing as a timeout
+                # even though the engine still had budget left.
+                timeout=httpx.Timeout(120.0, connect=10.0),
                 trust_env=False,
                 follow_redirects=False,
                 limits=httpx.Limits(
@@ -182,7 +195,18 @@ def create_app(*, token: str, connections: list[dict]) -> FastAPI:
         # tight deadline turns a healthy slow generation into a stream error.
         deadline_s=300,
         timeout_s=120,
-        max_retries=0,
+        # Free hosted tiers queue before the first token (30-60s is common);
+        # the 20s settings default abandoned queued candidates while the
+        # connection was perfectly healthy — a leading cause of "AI request
+        # timed out" on free models. 60s tolerates heavy queueing while
+        # still abandoning a truly stuck candidate before the 120s attempt
+        # budget, keeping fallback and the 300s deadline meaningful.
+        ttft_timeout_s=60,
+        # One retry per candidate: a transient timeout or 429 gets a second
+        # chance instead of an immediate user-visible failure. The 300s
+        # deadline still caps the whole request, so a retry can never hang
+        # the caller indefinitely.
+        max_retries=1,
     )
 
     @asynccontextmanager
