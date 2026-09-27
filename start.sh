@@ -10,7 +10,7 @@
 #  It will:
 #    1. Check for Python 3.11-3.13 (and say how to install it if missing)
 #    2. Create a virtualenv (+ bootstrap pip if missing)
-#    3. Create .env with a fresh API token (first run only)
+#    3. Copy .env.example to .env (first run only, dev-token stays)
 #    4. Install bucker-agent + its Python dependencies
 #    5. Start the dashboard at http://localhost:8123
 # ============================================================
@@ -134,22 +134,24 @@ fi
 
 # ---------------- 3. config (.env) ----------------
 echo " [3/5] Checking configuration..."
+# NOTE: .env is copied VERBATIM on purpose. It keeps the dev-token
+# default, which is what leaves the local dashboard + API open on
+# localhost with no login (the host guard still refuses non-localhost
+# callers). Generating a random token here would 401 the dashboard and
+# every token-less API call -- that broke CI's launcher smoke job.
 if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then
         cp .env.example .env
-        # Fresh clones get a unique API token so the dashboard/API is not
-        # stuck on the shared dev default. Python stdlib only — no deps yet.
-        python -c 'import secrets; from pathlib import Path; p=Path(".env"); t=p.read_text(encoding="utf-8"); t=t.replace("BUCKER_API_TOKEN=dev-token","BUCKER_API_TOKEN="+secrets.token_hex(24)); p.write_text(t,encoding="utf-8")' 2>/dev/null || true
-        echo "       created .env from .env.example (fresh API token generated)"
+        echo "       created .env from .env.example (dev-token localhost mode)"
     else
-        echo "       no .env or .env.example found — continuing with defaults"
+        echo "       no .env or .env.example found -- continuing with defaults"
     fi
 else
-    echo "       .env found — using your existing configuration"
+    echo "       .env found -- using your existing configuration"
 fi
 
 # Fail fast when the dashboard port is already taken (a leftover server
-# answers health probes but serves stale state — seen in CI).
+# answers health probes but serves stale state -- seen in CI).
 if python -c 'import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(0 if s.connect_ex(("127.0.0.1",int(sys.argv[1])))==0 else 1)' "$PORT" 2>/dev/null; then
     echo " ERROR: port $PORT is already in use."
     echo "        Kill the old server, or run: ./start.sh --port <free-port>"

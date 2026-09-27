@@ -3,7 +3,7 @@
 #
 #  Usage:  .\start.ps1 [--no-browser] [--port N]
 #
-#  Same as start.bat — nothing but Python required:
+#  Same as start.bat -- nothing but Python required:
 #  no Docker, no Postgres, no Temporal, no uv.
 # ============================================================
 param(
@@ -31,7 +31,7 @@ Write-Host ""
 
 # ---------------- 1. find or install Python ----------------
 # bucker needs Python 3.11 - 3.13 (>=3.11,<3.14; tested on 3.11/3.12).
-# A python on PATH may be the WRONG version (e.g. 3.14) — check the
+# A python on PATH may be the WRONG version (e.g. 3.14) -- check the
 # version and, if out of range, install the supported 3.12.
 function Test-BuckerPython {
     param($Exe)
@@ -101,16 +101,20 @@ if (-not (Test-Path $venvPip)) {
 
 # ---------------- 3. config (.env) ----------------
 Write-Host " [3/5] Checking configuration..."
+# NOTE: .env is copied VERBATIM on purpose. It keeps the dev-token
+# default, which is what leaves the local dashboard + API open on
+# localhost with no login (the host guard still refuses non-localhost
+# callers). Generating a random token here would 401 the dashboard and
+# every token-less API call -- that broke CI's launcher smoke job.
 if (-not (Test-Path ".env")) {
     if (Test-Path ".env.example") {
         Copy-Item ".env.example" ".env"
-        & $venvPy -c "import secrets; from pathlib import Path; p=Path('.env'); t=p.read_text(encoding='utf-8'); t=t.replace('BUCKER_API_TOKEN=dev-token','BUCKER_API_TOKEN='+secrets.token_hex(24)); p.write_text(t,encoding='utf-8')" 2>$null
-        Write-Host "       created .env from .env.example (fresh API token generated)"
+        Write-Host "       created .env from .env.example (dev-token localhost mode)"
     } else {
-        Write-Host "       no .env or .env.example found — continuing with defaults"
+        Write-Host "       no .env or .env.example found -- continuing with defaults"
     }
 } else {
-    Write-Host "       .env found — using your existing configuration"
+    Write-Host "       .env found -- using your existing configuration"
 }
 
 # Fail fast when the port is taken (a leftover server serves stale state).

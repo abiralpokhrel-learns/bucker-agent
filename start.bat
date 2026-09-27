@@ -10,7 +10,7 @@ rem
 rem  It will:
 rem    1. Check for Python 3.11-3.13 (and try to install 3.12 if missing)
 rem    2. Create a virtualenv
-rem    3. Create .env with a fresh API token (first run only)
+rem    3. Copy .env.example to .env (first run only, dev-token stays)
 rem    4. Install bucker-agent + its Python dependencies
 rem    5. Start the dashboard at http://localhost:8123
 rem ============================================================
@@ -23,12 +23,28 @@ if not defined PORT set "PORT=8123"
 set "NO_BROWSER="
 :parse_args
 if "%~1"=="" goto args_done
-if "%~1"=="--no-browser" set "NO_BROWSER=--no-browser" & shift & goto parse_args
-if "%~1"=="--port" (
-    if "%~2"=="" echo ERROR: --port needs a number & exit /b 2
-    set "PORT=%~2" & shift & shift & goto parse_args
+rem NOTE: one command per IF body via parenthesized blocks. Inline
+rem `if cond A & B` runs B unconditionally -- that silently swallowed
+rem arguments (and once broke CI), so every branch is explicit here.
+if "%~1"=="--no-browser" (
+    set "NO_BROWSER=--no-browser"
+    shift
+    goto parse_args
 )
-echo "%~1" | findstr /b /c:"--port=" >nul && (
+if "%~1"=="--port" (
+    if "%~2"=="" (
+        echo ERROR: --port needs a number
+        exit /b 2
+    )
+    set "PORT=%~2"
+    shift
+    shift
+    goto parse_args
+)
+rem NOTE: %~1 is echoed UNQUOTED so findstr /b (beginning-of-line)
+rem can match the --port= prefix; "%~1" would start the line with a
+rem quote and never match.
+echo %~1 | findstr /b /c:"--port=" >nul && (
     for /f "tokens=2 delims==" %%p in ("%~1") do set "PORT=%%p"
     shift & goto parse_args
 )
@@ -52,7 +68,7 @@ echo.
 
 rem ---------------- 1. find or install Python ----------------
 rem bucker needs Python 3.11 - 3.13 (>=3.11,<3.14; tested on 3.11/3.12).
-rem A python.exe on PATH may be the WRONG version (e.g. 3.14) — check the
+rem A python.exe on PATH may be the WRONG version (e.g. 3.14) -- check the
 rem version and, if out of range, install the supported 3.12.
 
 set "PYTHON="
@@ -118,11 +134,15 @@ if not exist ".venv\Scripts\pip.exe" (
 
 rem ---------------- 3. config (.env) ----------------
 echo  [3/5] Checking configuration...
+rem NOTE: .env is copied VERBATIM on purpose. It keeps the dev-token
+rem default, which is what leaves the local dashboard + API open on
+rem localhost with no login (the host guard still refuses non-localhost
+rem callers). Generating a random token here would 401 the dashboard and
+rem every token-less API call -- that broke CI's launcher smoke job.
 if not exist ".env" (
     if exist ".env.example" (
         copy /y ".env.example" ".env" >nul
-        ".venv\Scripts\python.exe" -c "import secrets; from pathlib import Path; p=Path('.env'); t=p.read_text(encoding='utf-8'); t=t.replace('BUCKER_API_TOKEN=dev-token','BUCKER_API_TOKEN='+secrets.token_hex(24)); p.write_text(t,encoding='utf-8')" >nul 2>&1
-        echo        created .env from .env.example (fresh API token generated)
+        echo        created .env from .env.example (dev-token localhost mode)
     ) else (
         echo        no .env or .env.example found - continuing with defaults
     )

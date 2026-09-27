@@ -73,8 +73,8 @@ start.bat
 ```
 
 The launcher sets up everything (a private environment + dependencies,
-which takes a minute the first time; it also creates `.env` with a fresh
-API token on first run), then starts bucker and opens the dashboard.
+which takes a minute the first time; it also copies `.env.example` to
+`.env` on first run), then starts bucker and opens the dashboard.
 Options: `--no-browser`, `--port <N>` (e.g. `start.bat --port 8124`).
 
 ---

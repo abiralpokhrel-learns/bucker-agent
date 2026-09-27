@@ -13,6 +13,10 @@ on:
         description: "Release tag to create/update (e.g. v2.0.0)"
         required: false
         default: ""
+      hermes_ref:
+        description: "Hermes source ref (commit SHA). Empty = auto-resolve 0.20.5."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -36,11 +40,36 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v3
 
-      - name: Checkout Hermes agent (pinned)
-        # Pinned to the version verified in desktop/build/runtime/inventory.json.
-        # Bump together with the inventory after verifying the handshake.
+      - name: Checkout Hermes agent (pinned to 0.20.5 sources)
+        # 0.20.5 is a source-tree version (inventory.json), NOT a git tag or a
+        # PyPI release — hermes-agent tags are date-based (v2026.9.24, ...), so
+        # `git clone --branch v0.20.5` fails. Resolve the commit that introduced
+        # `version = "0.20.5"` in pyproject.toml instead, and verify the
+        # checkout really declares it before building. Override with the
+        # hermes_ref dispatch input when deliberately moving versions (then
+        # re-verify the ACP handshake and bump the inventory + docs).
+        shell: pwsh
         run: |
-          git clone --depth 1 --branch v0.20.5 https://github.com/NousResearch/hermes-agent.git "$env:RUNNER_TEMP/hermes-agent"
+          $dest = Join-Path $env:RUNNER_TEMP "hermes-agent"
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          git clone --filter=blob:none --no-checkout https://github.com/NousResearch/hermes-agent.git $dest
+          Set-Location $dest
+          $ref = "${{ github.event.inputs.hermes_ref }}"
+          if (-not $ref) {
+            $ref = git log --all -S 'version = "0.20.5"' --format=%H -- pyproject.toml | Select-Object -Last 1
+            if (-not $ref) { throw "could not resolve hermes 0.20.5 sources; re-run with hermes_ref set to a commit SHA" }
+            Write-Host "resolved hermes 0.20.5 sources at $ref"
+          } else {
+            Write-Host "using explicit hermes_ref $ref"
+          }
+          git checkout $ref
+          if (-not "${{ github.event.inputs.hermes_ref }}") {
+            $ver = git show "${ref}:pyproject.toml" | Select-String '^\s*version\s*='
+            Write-Host "pyproject declares:$ver"
+            if ($ver -notmatch '"0\.20\.5"') {
+              throw "hermes checkout does not declare 0.20.5 — refusing to package a different agent than verified"
+            }
+          }
 
       - name: Build bundled runtime
         run: |
@@ -79,10 +108,13 @@ jobs:
           Get-Content VERIFICATION.txt
 
       - name: Upload to GitHub Release
+        # github.event.inputs is null on tag-push events; indexing into null
+        # yields null (no error), so this resolves to the pushed tag there
+        # and to the manual input on workflow_dispatch.
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
-          name: Bucker Desktop ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: Bucker Desktop ${{ github.event.inputs.tag || github.ref_name }}
           draft: false
           prerelease: true
           generate_release_notes: true

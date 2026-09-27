@@ -70,8 +70,9 @@ cd bucker-agent
 | macOS / Linux | `./start.sh` |
 
 The launcher checks Python 3.11–3.13, creates `.venv`, copies `.env.example`
-to `.env` with a fresh `BUCKER_API_TOKEN` on first run, installs dependencies,
-and starts Lite mode. Options: `--no-browser`, `--port <N>` (or `PORT` env).
+to `.env` on first run (dev-token localhost mode — no login needed locally),
+installs dependencies, and starts Lite mode. Options: `--no-browser`,
+`--port <N>` (or `PORT` env). Add provider keys to `.env` for AI code tasks.
 
 Open **http://localhost:8123** → **New task** → type
 `create a file called hello.py that prints "hello from the robot"` → Create.
