@@ -1,13 +1,26 @@
 # ============================================================
 #  bucker-agent  -  PowerShell launcher (Windows)
 #
-#  Usage:  .\start.ps1     (or:  start.ps1)
+#  Usage:  .\start.ps1 [--no-browser] [--port N]
 #
 #  Same as start.bat — nothing but Python required:
 #  no Docker, no Postgres, no Temporal, no uv.
 # ============================================================
+param(
+    [switch]$noBrowser,
+    [int]$port = 0,
+    [switch]$help
+)
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
+
+if ($help) {
+    Write-Host "Usage: .\start.ps1 [--no-browser] [--port N]"
+    exit 0
+}
+if ($port -eq 0) {
+    if ($env:PORT) { $port = [int]$env:PORT } else { $port = 8123 }
+}
 
 Write-Host ""
 Write-Host " =========================================="
@@ -33,11 +46,11 @@ $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not (Test-BuckerPython $py.Source)) { $py = Get-Command py -ErrorAction SilentlyContinue }
 if (-not (Test-BuckerPython $py.Source)) {
     if ($py) {
-        Write-Host " [1/4] Python found but version is unsupported:"
+        Write-Host " [1/5] Python found but version is unsupported:"
         & $py.Source --version
         Write-Host "       bucker needs Python 3.11-3.13, so installing 3.12..."
     } else {
-        Write-Host " [1/4] Python not found - attempting to install it..."
+        Write-Host " [1/5] Python not found - attempting to install it..."
     }
     $installer = Join-Path $env:TEMP "python-installer.exe"
     try {
@@ -61,12 +74,12 @@ if (-not (Test-BuckerPython $py.Source)) {
     Read-Host " Press Enter to exit..."
     exit 1
 }
-Write-Host " [1/4] Python found: $($py.Name)"
+Write-Host " [1/5] Python found: $($py.Name)"
 
 # ---------------- 2. create the virtualenv ----------------
 $venvPy = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 $venvPip = Join-Path $PSScriptRoot ".venv\Scripts\pip.exe"
-Write-Host " [2/4] Setting up virtual environment..."
+Write-Host " [2/5] Setting up virtual environment..."
 if (-not (Test-Path $venvPy)) {
     & $py.Source -m venv .venv
     if ($LASTEXITCODE -ne 0) {
@@ -86,19 +99,50 @@ if (-not (Test-Path $venvPip)) {
     }
 }
 
-# ---------------- 3. install the package ----------------
-Write-Host " [3/4] Installing bucker-agent (this may take a minute)..."
-& $venvPy -m pip install --quiet --disable-pip-version-check -e .
-if ($LASTEXITCODE -ne 0) {
-    Write-Host " ERROR: pip install failed. Check your internet connection and try again."
+# ---------------- 3. config (.env) ----------------
+Write-Host " [3/5] Checking configuration..."
+if (-not (Test-Path ".env")) {
+    if (Test-Path ".env.example") {
+        Copy-Item ".env.example" ".env"
+        & $venvPy -c "import secrets; from pathlib import Path; p=Path('.env'); t=p.read_text(encoding='utf-8'); t=t.replace('BUCKER_API_TOKEN=dev-token','BUCKER_API_TOKEN='+secrets.token_hex(24)); p.write_text(t,encoding='utf-8')" 2>$null
+        Write-Host "       created .env from .env.example (fresh API token generated)"
+    } else {
+        Write-Host "       no .env or .env.example found — continuing with defaults"
+    }
+} else {
+    Write-Host "       .env found — using your existing configuration"
+}
+
+# Fail fast when the port is taken (a leftover server serves stale state).
+& $venvPy -c "import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(0 if s.connect_ex(('127.0.0.1',int(sys.argv[1])))==0 else 1)" $port 2>$null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host " ERROR: port $port is already in use."
+    Write-Host "        Kill the old server, or run: .\start.ps1 --port <free-port>"
     Read-Host " Press Enter to exit..."
     exit 1
 }
 
-# ---------------- 4. run it ----------------
-Write-Host " [4/4] Starting bucker-agent lite mode..."
+# ---------------- 4. install the package ----------------
+Write-Host " [4/5] Installing bucker-agent (first run takes a minute)..."
+& $venvPy -m pip install --quiet --disable-pip-version-check -e .
+if ($LASTEXITCODE -ne 0) {
+    Write-Host " ERROR: pip install failed. Check your internet connection and try again."
+    Write-Host " Retrying verbosely so you can see the real error:"
+    & $venvPy -m pip install --disable-pip-version-check -e .
+    Read-Host " Press Enter to exit..."
+    exit 1
+}
+
+# ---------------- 5. run it ----------------
+Write-Host " [5/5] Starting bucker-agent lite mode..."
 Write-Host ""
-Write-Host "  dashboard will open at:  http://localhost:8123"
+Write-Host "  dashboard:  http://localhost:$port"
+Write-Host '  first task: click New task -> type: create a file called hello.py that prints "hello from the robot"'
+Write-Host "  (demo tasks need no API key; AI code tasks need a provider key in .env)"
 Write-Host "  press Ctrl+C to stop"
 Write-Host ""
-& $venvPy -m bucker.cli lite
+if ($noBrowser) {
+    & $venvPy -m bucker.cli lite --no-browser --port $port
+} else {
+    & $venvPy -m bucker.cli lite --port $port
+}

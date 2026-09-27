@@ -31,10 +31,19 @@ event history, and replay for structured tasks.
 The x64 installer bundles Python, the agent harness, and the local gateway.
 No separate Python or agent installation is required.
 
-**Download pending:** the installer is built and its packaged payload passed smoke
-tests, but the GitHub upload has not completed. No public installer asset is
-available yet. Check [Releases](https://github.com/abiralpokhrel-learns/bucker-agent/releases)
-for availability; the source-code ZIP is not an installer.
+Download `Bucker-Desktop-<version>-Setup.exe` plus `SHA256SUMS.txt` from
+[Releases](https://github.com/abiralpokhrel-learns/bucker-agent/releases)
+(the source-code ZIP is not an installer). Verify, then run:
+
+```powershell
+certutil -hashfile Bucker-Desktop-<version>-Setup.exe SHA256
+# compare the output to SHA256SUMS.txt, then launch the installer
+```
+
+Releases are published automatically by the `release` workflow on every
+`v*` tag. If no installer asset is attached yet, either use the source
+path below or build it yourself from `desktop/` (`npm run package:win` —
+see [desktop source setup](desktop/README.md)).
 
 Once installed: **open a folder → Providers → add your key → connect the agent**.
 Editing works offline; cloud AI needs internet and your own provider account.
@@ -57,11 +66,17 @@ cd bucker-agent
 
 | System | Start command |
 |---|---|
-| Windows | `.\start.bat` |
+| Windows | `.\start.bat` (or `.\start.ps1`) |
 | macOS / Linux | `./start.sh` |
 
-Open **http://localhost:8123**. Demo tasks need no model key; AI code tasks need a
-configured provider. See the [usage guide](docs/USAGE.md).
+The launcher checks Python 3.11–3.13, creates `.venv`, copies `.env.example`
+to `.env` with a fresh `BUCKER_API_TOKEN` on first run, installs dependencies,
+and starts Lite mode. Options: `--no-browser`, `--port <N>` (or `PORT` env).
+
+Open **http://localhost:8123** → **New task** → type
+`create a file called hello.py that prints "hello from the robot"` → Create.
+Demo tasks need no model key; AI code tasks need a provider key in `.env`.
+Stuck? Run `python scripts/doctor.py`. See the [usage guide](docs/USAGE.md).
 
 For the full **Postgres + Temporal + Docker sandbox** stack, start Docker and run:
 

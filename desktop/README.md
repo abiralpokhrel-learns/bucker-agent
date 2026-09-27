@@ -7,14 +7,27 @@ Hermes owns the agent loop. `bucker/desktop_gateway` reuses Bucker's RouterEngin
 
 ## Windows installer
 
-Download the installer and SHA256 checksums from
+Download `Bucker-Desktop-<version>-Setup.exe` and `SHA256SUMS.txt` from
 [GitHub Releases](https://github.com/abiralpokhrel-learns/bucker-agent/releases).
 Generated packages are release assets, not source files; `desktop/release/` is
-ignored by Git and remains available locally after builds.
+ignored by Git and remains available locally after builds. Releases are
+published automatically by the `release` workflow on every `v*` tag
+(`.github/workflows/release.yml`); if an asset is missing, build it with
+`npm run package:win` (needs the Hermes 0.20.5 checkout for
+`packaging/build_runtime.py --hermes-source <dir>`).
 
-`release/Bucker-Desktop-2.0.0-Setup.exe` is a single x64 NSIS installer containing Electron, the renderer, Python 3.12.10, Hermes 0.20.5 sources and 71 Python packages, and the standalone gateway. No user credentials or profiles are included. Enter your provider key after launch. Internet is needed for model calls; project-specific compilers, Git/Bash, Node and other toolchains are not included.
+Verify before running:
 
-This unsigned developer-preview installer was built successfully, but Device Guard blocked installation on the test host. Do not disable organizational policy to install it; administrator approval/signing is needed. The unpacked packaged payload was used for acceptance testing, not a clean installed system.
+```powershell
+certutil -hashfile Bucker-Desktop-<version>-Setup.exe SHA256
+# compare to SHA256SUMS.txt
+```
+
+The installer is a single x64 NSIS package containing Electron, the renderer, Python 3.12.10, Hermes 0.20.5 sources and 71 Python packages, and the standalone gateway. No user credentials or profiles are included. Enter your provider key after launch. Internet is needed for model calls; project-specific compilers, Git/Bash, Node and other toolchains are not included.
+
+This is an unsigned developer preview. Windows SmartScreen / Device Guard may
+warn or block it. Do not disable organizational policy to install it;
+administrator approval/signing is needed. The unpacked packaged payload was used for acceptance testing, not a clean installed system.
 
 ## Run from source
 
