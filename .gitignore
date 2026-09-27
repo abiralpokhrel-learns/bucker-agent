@@ -13,6 +13,13 @@ backups/
 blobstore/
 workspace/
 evaluation_results/
+# Benchmark / experiment outputs (datasets, predictions, run logs).
+# These are derived artifacts, not source: they bloat clones and go stale.
+# Export results that back a *published* claim deliberately, not by accident.
+logs/
+predictions/
+experiments.jsonl
+swebench_lite.json
 # Lite-mode sqlite database (created by `bucker lite` / start.bat at repo root)
 bucker_lite.db
 bucker_lite.db-wal
